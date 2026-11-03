@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bridge-api"
+version = "0.1.0"
+description = "Bridge student talent marketplace API"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.13",
+    "fastapi>=0.115",
+    "psycopg[binary]>=3.2",
+    "PyJWT[crypto]>=2.15",
+    "pydantic-settings>=2.6",
+    "python-dotenv>=1.0",
+    "sqlalchemy>=2.0",
+    "uvicorn[standard]>=0.34",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
