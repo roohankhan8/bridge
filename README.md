@@ -47,6 +47,10 @@ The Compose project name is kept as `backend` so an existing local database volu
 
 Student signup includes full name, 1–20 unique skill tags (up to 60 characters each), experience (`beginner`, `intermediate`, or `advanced`), weekly availability (0–168 hours), and an optional HTTP(S) portfolio URL. Passwords use Argon2 hashes; refresh tokens are stored only as hashes. Email verification, password recovery, and account linking aren’t implemented. Admin accounts must be provisioned through a trusted process.
 
+## API docs for mobile
+
+When the local API is running, use [Swagger UI](http://localhost:8000/docs) to explore and try endpoints, or fetch the [OpenAPI JSON](http://localhost:8000/openapi.json). The `/docs` page documents bearer auth, fields, examples, responses, and pagination. `localhost` only works from the machine running the API; configure a reachable development or deployed base URL in the mobile app. See the [mobile API quickstart](docs/bridge_backend_handoff.md#mobile-api-quickstart) for request and response examples.
+
 ## Task and application routes
 
 All task and application routes require a Bridge bearer access token. Budgets are positive PKR amounts with up to two decimal places; deadlines are calendar dates and may be today or later in UTC.

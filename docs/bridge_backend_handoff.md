@@ -87,6 +87,190 @@ Matches groups candidates/application cards into visible status sections, and ac
 | `GET /v1/conversations` · `GET /v1/conversations/{id}/messages` | List/read conversations. | Member-only, ordered by sent time, cursor paginated. | Proposed |
 | `POST /v1/conversations/{id}/messages` | Send message. | Member-only; validate body; persist and return canonical message. | Proposed |
 
+## Mobile API quickstart
+
+### Base URL and interactive docs
+
+For local development, start the API with `uvicorn app.main:app --reload` and open [Swagger UI](http://localhost:8000/docs). The machine-readable contract is at [OpenAPI JSON](http://localhost:8000/openapi.json). `localhost` is reachable only from the machine running the API; mobile simulators/devices need a base URL they can reach. Use the environment's configured API host rather than hard-coding a production URL.
+
+All request and response bodies are JSON. After registration or sign-in, retain `access_token` for protected requests and send it as `Authorization: Bearer <access_token>`. Keep `refresh_token` for `/v1/auth/refresh` and `/v1/auth/logout`; do not send it as the bearer token.
+
+### Register and sign in
+
+Student registration includes a profile. Freelancer registration omits `student_profile` and sets `role` to `freelancer`.
+
+```http
+POST /v1/auth/register
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "student@example.com",
+  "password": "<user-chosen-password>",
+  "role": "student",
+  "student_profile": {
+    "full_name": "Ayesha Khan",
+    "key_skills": ["Python", "FastAPI"],
+    "experience_level": "intermediate",
+    "availability_hours_per_week": 20,
+    "portfolio_url": "https://example.com/portfolio"
+  }
+}
+```
+
+Registration returns `201 Created` with the same token shape shown below. The placeholder password is supplied by the user; clients must not hard-code it.
+
+```http
+POST /v1/auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "student@example.com",
+  "password": "<account-password>"
+}
+```
+
+Successful registration (`201`) and login (`200`) return the same token shape:
+
+```json
+{
+  "access_token": "<bridge-access-token>",
+  "refresh_token": "<bridge-refresh-token>",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+```
+
+Student registration also requires a `student_profile`; freelancer registration uses `"role": "freelancer"` and omits that field. Public registration cannot create admins. For Google sign-in, send the ID token obtained through the mobile Google Sign-In SDK to `POST /v1/auth/google` as `id_token`.
+
+### Create a task
+
+Freelancers create tasks. Budget is a positive PKR amount with up to two decimal places. Deadline is a calendar date in `YYYY-MM-DD` form and must be today or later in UTC. Required skills are 1–20 unique, non-empty strings, each at most 60 characters.
+
+```http
+POST /v1/tasks
+Authorization: Bearer <access-token>
+Content-Type: application/json
+```
+
+```json
+{
+  "title": "Build a student dashboard",
+  "description": "Create a responsive dashboard for tracking student projects.",
+  "budget": 25000.00,
+  "deadline": "2026-12-31",
+  "required_skills": ["FastAPI", "PostgreSQL"]
+}
+```
+
+The response is `201 Created` and includes server-generated IDs, `status: "open"`, and UTC timestamps:
+
+```json
+{
+  "id": "9dd5d6d6-89ae-4d10-9cf4-4ccb06d785d9",
+  "owner_id": "e88d05b8-bb5a-4b2c-9e48-1b926ba88a71",
+  "title": "Build a student dashboard",
+  "description": "Create a responsive dashboard for tracking student projects.",
+  "budget": 25000.0,
+  "deadline": "2026-12-31",
+  "required_skills": ["FastAPI", "PostgreSQL"],
+  "status": "open",
+  "created_at": "2026-11-05T12:00:00Z",
+  "updated_at": "2026-11-05T12:00:00Z"
+}
+```
+
+### Browse tasks and continue a page
+
+```http
+GET /v1/tasks?limit=20
+Authorization: Bearer <access-token>
+```
+
+The response has `items` and `next_cursor`. Continue with the returned cursor; when it is `null`, there are no more results. Cursors are UUIDs and `limit` must be between 1 and 100 (default 20).
+
+```json
+{
+  "items": [],
+  "next_cursor": null
+}
+```
+
+### Apply to a task
+
+Students can submit one application per task while it is open and not past its deadline.
+
+```http
+POST /v1/tasks/9dd5d6d6-89ae-4d10-9cf4-4ccb06d785d9/applications
+Authorization: Bearer <access-token>
+Content-Type: application/json
+```
+
+```json
+{
+  "proposal": "I have built similar FastAPI services and can deliver the dashboard in two weeks."
+}
+```
+
+The response is `201 Created` with the application ID and initial `status: "pending"`.
+
+```json
+{
+  "id": "6d0f9e79-14f4-46b4-aa85-42dbe9e80756",
+  "task_id": "9dd5d6d6-89ae-4d10-9cf4-4ccb06d785d9",
+  "student_id": "d49986b4-4e7e-4d2a-9d1e-663f49103f0c",
+  "proposal": "I have built similar FastAPI services and can deliver the dashboard in two weeks.",
+  "status": "pending",
+  "created_at": "2026-11-05T12:00:00Z",
+  "updated_at": "2026-11-05T12:00:00Z"
+}
+```
+
+### Review and decide an application
+
+Only the freelancer who owns the task can list its applications or decide them. List with `GET /v1/tasks/{task_id}/applications?limit=20`; use `next_cursor` the same way as task browsing. Accept or reject a pending application with:
+
+```http
+PATCH /v1/applications/6d0f9e79-14f4-46b4-aa85-42dbe9e80756
+Authorization: Bearer <access-token>
+Content-Type: application/json
+```
+
+```json
+{
+  "status": "accepted"
+}
+```
+
+The response returns the application object with `status: "accepted"`; all other fields are unchanged from the submitted application. Repeating the same decision is safe; trying to change an already settled decision returns `409`.
+
+```json
+{
+  "id": "6d0f9e79-14f4-46b4-aa85-42dbe9e80756",
+  "task_id": "9dd5d6d6-89ae-4d10-9cf4-4ccb06d785d9",
+  "student_id": "d49986b4-4e7e-4d2a-9d1e-663f49103f0c",
+  "proposal": "I have built similar FastAPI services and can deliver the dashboard in two weeks.",
+  "status": "accepted",
+  "created_at": "2026-11-05T12:00:00Z",
+  "updated_at": "2026-11-05T12:05:00Z"
+}
+```
+
+### Common errors
+
+Errors use FastAPI's `{"detail": ...}` shape. Validation errors (`422`) include a list of field-level details.
+
+| Status | Meaning for the mobile client |
+|---|---|
+| `401` | Missing, invalid, or expired access token; sign in or refresh, then retry as appropriate. |
+| `403` | Authenticated account role cannot perform the action. |
+| `404` | Resource does not exist or is outside the caller's visibility. |
+| `409` | State conflict: duplicate application, closed/expired task, own-task application, or an already settled decision. |
+| `422` | Invalid JSON field, date, budget, skill list, cursor, or limit. |
+
 ## Current and suggested data model
 
 | Entity | Fields | Notes |

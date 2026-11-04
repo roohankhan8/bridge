@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from google.auth import exceptions as google_exceptions
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token as google_id_token
-from pydantic import AnyHttpUrl, BaseModel, EmailStr, Field, StringConstraints, UrlConstraints, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, StringConstraints, UrlConstraints, model_validator
 from pwdlib import PasswordHash
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -16,7 +16,14 @@ from app.core.config import Settings, get_settings
 from app.db.models import RefreshSession, StudentProfile, User
 from app.db.session import get_db
 
-router = APIRouter(prefix="/auth", tags=["authentication"])
+router = APIRouter(
+    prefix="/auth",
+    tags=["authentication"],
+    responses={
+        422: {"description": "A request field failed validation."},
+        503: {"description": "Authentication service or required configuration is unavailable."},
+    },
+)
 password_hasher = PasswordHash.recommended()
 dummy_password_hash = password_hasher.hash("bridge-invalid-login-placeholder")
 RoleChoice = Literal["student", "freelancer"]
@@ -24,11 +31,30 @@ Skill = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, ma
 
 
 class StudentProfileInput(BaseModel):
-    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=120)]
-    key_skills: list[Skill] = Field(min_length=1, max_length=20)
-    experience_level: Literal["beginner", "intermediate", "advanced"]
-    availability_hours_per_week: int = Field(ge=0, le=168)
-    portfolio_url: Annotated[AnyHttpUrl, UrlConstraints(max_length=2048)] | None = None
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "full_name": "Ayesha Khan",
+        "key_skills": ["Python", "FastAPI"],
+        "experience_level": "intermediate",
+        "availability_hours_per_week": 20,
+        "portfolio_url": "https://example.com/portfolio",
+    }]})
+
+    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=120)] = Field(
+        description="Student's full name (2–120 characters)."
+    )
+    key_skills: list[Skill] = Field(
+        min_length=1,
+        max_length=20,
+        description="1–20 unique skill tags, each 1–60 characters.",
+        examples=[["Python", "FastAPI"]],
+    )
+    experience_level: Literal["beginner", "intermediate", "advanced"] = Field(
+        description="Self-reported experience level."
+    )
+    availability_hours_per_week: int = Field(ge=0, le=168, description="Available hours each week (0–168).")
+    portfolio_url: Annotated[AnyHttpUrl, UrlConstraints(max_length=2048)] | None = Field(
+        default=None, description="Optional HTTP(S) portfolio URL."
+    )
 
     @model_validator(mode="after")
     def skills_are_unique(self):
@@ -38,10 +64,25 @@ class StudentProfileInput(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-    role: RoleChoice = "student"
-    student_profile: StudentProfileInput | None = None
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "email": "student@example.com",
+        "password": "ExamplePass123!",
+        "role": "student",
+        "student_profile": {
+            "full_name": "Ayesha Khan",
+            "key_skills": ["Python", "FastAPI"],
+            "experience_level": "intermediate",
+            "availability_hours_per_week": 20,
+            "portfolio_url": "https://example.com/portfolio",
+        },
+    }]})
+
+    email: EmailStr = Field(description="Account email address.")
+    password: str = Field(min_length=8, max_length=128, description="Password (8–128 characters).")
+    role: RoleChoice = Field(default="student", description="Public signup role: student or freelancer.")
+    student_profile: StudentProfileInput | None = Field(
+        default=None, description="Required for student signup; omitted for freelancer signup."
+    )
 
     @model_validator(mode="after")
     def require_student_profile(self):
@@ -53,25 +94,53 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=1, max_length=128)
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "email": "student@example.com",
+        "password": "ExamplePass123!",
+    }]})
+
+    email: EmailStr = Field(description="Account email address.")
+    password: str = Field(min_length=1, max_length=128, description="Account password.")
 
 
 class GoogleSignInRequest(BaseModel):
-    id_token: str = Field(min_length=1, max_length=8192)
-    role: RoleChoice = "student"
-    student_profile: StudentProfileInput | None = None
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "id_token": "<google-id-token>",
+        "role": "student",
+        "student_profile": {
+            "full_name": "Ayesha Khan",
+            "key_skills": ["Python", "FastAPI"],
+            "experience_level": "intermediate",
+            "availability_hours_per_week": 20,
+            "portfolio_url": "https://example.com/portfolio",
+        },
+    }]})
+
+    id_token: str = Field(min_length=1, max_length=8192, description="Google ID token obtained by the mobile Google Sign-In SDK.")
+    role: RoleChoice = Field(default="student", description="Role for a new Bridge account; existing accounts keep their saved role.")
+    student_profile: StudentProfileInput | None = Field(
+        default=None, description="Required when creating a new student account; omitted for freelancer signup."
+    )
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str = Field(min_length=1, max_length=512)
+    model_config = ConfigDict(json_schema_extra={"examples": [{"refresh_token": "<bridge-refresh-token>"}]})
+
+    refresh_token: str = Field(min_length=1, max_length=512, description="Bridge refresh token returned at sign-in.")
 
 
 class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: Literal["bearer"] = "bearer"
-    expires_in: int
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "access_token": "<bridge-access-token>",
+        "refresh_token": "<bridge-refresh-token>",
+        "token_type": "bearer",
+        "expires_in": 900,
+    }]})
+
+    access_token: str = Field(description="Bridge JWT to send as a bearer token to protected endpoints.")
+    refresh_token: str = Field(description="Opaque Bridge token used only with refresh and logout endpoints.")
+    token_type: Literal["bearer"] = Field(default="bearer", description="Access-token scheme.")
+    expires_in: int = Field(description="Access-token lifetime in seconds.")
 
 
 def normalize_email(email: str) -> str:
@@ -135,12 +204,19 @@ def verify_google_token(token: str, settings: Settings) -> dict:
     return claims
 
 
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a Bridge account",
+    responses={409: {"description": "An account with this email already exists."}, 422: {"description": "Request fields failed validation."}, 503: {"description": "Required authentication configuration is unavailable."}},
+)
 def register(
     request: RegisterRequest,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
+    """Create a student or freelancer account and return Bridge access and refresh tokens."""
     signing_secret(settings)
     email = normalize_email(str(request.email))
     if db.scalar(select(User.id).where(User.email == email)) is not None:
@@ -163,12 +239,18 @@ def register(
     return tokens
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    summary="Sign in with email and password",
+    responses={401: {"description": "Email or password is invalid."}, 503: {"description": "Authentication is not configured."}},
+)
 def login(
     request: LoginRequest,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
+    """Verify credentials and return Bridge access and refresh tokens."""
     signing_secret(settings)
     user = db.scalar(select(User).where(User.email == normalize_email(str(request.email))))
     encoded_password = user.password_hash if user and user.password_hash else dummy_password_hash
@@ -180,12 +262,18 @@ def login(
     return tokens
 
 
-@router.post("/google", response_model=TokenResponse)
+@router.post(
+    "/google",
+    response_model=TokenResponse,
+    summary="Sign in with Google",
+    responses={401: {"description": "Google ID token is invalid."}, 409: {"description": "Email already belongs to a different account."}, 503: {"description": "Google sign-in is unavailable or not configured."}},
+)
 def google_sign_in(
     request: GoogleSignInRequest,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
+    """Exchange a Google ID token for Bridge tokens; new student accounts need a profile."""
     signing_secret(settings)
     claims = verify_google_token(request.id_token, settings)
     email = normalize_email(claims["email"])
@@ -227,12 +315,18 @@ def google_sign_in(
     return tokens
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    summary="Refresh Bridge tokens",
+    responses={401: {"description": "Refresh token is invalid, expired, or reused."}, 503: {"description": "Authentication is not configured."}},
+)
 def refresh(
     request: RefreshRequest,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
+    """Rotate a refresh token and return a new access/refresh token pair."""
     signing_secret(settings)
     token_hash = hash_refresh_token(request.refresh_token)
     user_id = db.scalar(
@@ -278,7 +372,12 @@ def refresh(
     return tokens
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Log out",
+    description="Revoke the refresh token's session family. Returns 204 with no response body.",
+)
 def logout(request: RefreshRequest, db: Session = Depends(get_db)) -> Response:
     token_hash = hash_refresh_token(request.refresh_token)
     user_id = db.scalar(select(RefreshSession.user_id).where(RefreshSession.token_hash == token_hash))
