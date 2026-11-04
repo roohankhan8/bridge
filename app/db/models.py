@@ -29,6 +29,7 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="student", server_default="student")
+    email_verified: Mapped[bool] = mapped_column(default=True, server_default="true", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
     )
@@ -50,11 +51,37 @@ class StudentProfile(Base):
     user_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    full_name: Mapped[str] = mapped_column(String(120))
-    key_skills: Mapped[list[str]] = mapped_column(JSON)
-    experience_level: Mapped[str] = mapped_column(String(20))
-    availability_hours_per_week: Mapped[int] = mapped_column()
+    full_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    key_skills: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    experience_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    availability_hours_per_week: Mapped[int | None] = mapped_column(nullable=True)
     portfolio_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    university: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    degree_program: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    graduation_year: Mapped[int | None] = mapped_column(nullable=True)
+    profile_photo_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    highlights: Mapped[str | None] = mapped_column(Text, nullable=True)
+    digital_footprint: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    core_skills: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    supporting_skills: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    availability: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    preferred_work_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    workplace_arrangement: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    project_duration: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    purpose: Mapped[str] = mapped_column(String(20))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now())
 
 
 class RefreshSession(Base):

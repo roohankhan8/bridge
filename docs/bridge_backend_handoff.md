@@ -32,8 +32,8 @@ Keep one API service for the initial scope. Add a worker, queue, realtime transp
 | Splash screen | Bridge branding and loading state. | No domain operation shown; startup may later fetch session/config. |
 | Prototype launch | “Double click to open” prototype card. | Design navigation only; not a product requirement. |
 | Role selection | Student or Freelancer choice; Continue. | Persist selected account mode or use it to route onboarding. |
-| Login / signup | Email, password, Login, Google continuation, sign-up link. | Use `/v1/auth/register`, `/v1/auth/login`, and `/v1/auth/google`; signup and recovery details are not shown. |
-| Student onboarding | Full name, skill tags, experience level, weekly availability, portfolio link; save/continue. | Student registration persists a profile with validated skills, experience, availability hours per week, and optional portfolio URL. |
+| Login / signup | Email, password, Login, Google continuation, sign-up link. | Use `/v1/auth/register`, `/v1/auth/login`, and `/v1/auth/google`; verify email before password login and support password recovery. |
+| Student onboarding | Five steps: education/photo; experience/highlights/work links; core/supporting skills; availability/work preferences; public preview. | Save each step incrementally; publish only a complete profile after email verification. |
 | Task details | Title, image, budget, deadline, description, skills; client/task summary. | Read task detail and related client metadata. |
 | Student home | Active task count, pending payment amount, available task cards with budget and detail link. | Dashboard summary plus paginated task discovery; metric definitions remain open. |
 | Apply to task | Task summary, proposal text, portfolio highlights and edit selection. | Create application/proposal linked to task and applicant. |
@@ -49,7 +49,9 @@ Keep one API service for the initial scope. Add a worker, queue, realtime transp
 
 ### Sign in and build a student profile
 
-The user chooses Student or Freelancer and creates a Bridge account with email/password or Google sign-in. Student signup includes full name, 1-20 unique key-skill tags (up to 60 characters each), experience (`beginner`, `intermediate`, or `advanced`), weekly availability (0-168 hours), and an optional HTTP(S) portfolio URL. The client receives Bridge access and refresh tokens and sends the access JWT as a bearer token to FastAPI. `GET /v1/me` returns the Bridge user ID, role, and saved student profile. Email verification, password recovery, and account linking are not implemented.
+The user chooses Student or Freelancer and creates a Bridge account with email/password or Google sign-in. Email/password registration sends a verification link; the account must be verified before password login. Forgot-password requests send a time-limited reset link, and successful resets revoke existing refresh sessions. Configure the SMTP settings and public app URL in `.env.example` for these emails. The client receives Bridge access and refresh tokens after sign-in and sends the access JWT as a bearer token to FastAPI.
+
+Students can register with step-one fields only and save later steps independently through `PUT /v1/me/student-profile`. The steps collect full name, university, degree/program, graduation year and photo URL; experience, highlights and digital-footprint URLs; up to three core skills with depth plus supporting skills; availability (`10-15`, `15-20`, `20-30`, or `full-time-40`), paid-task and/or structured-internship preference, remote or hybrid arrangement, and project duration (`<2`, `2-4`, `4-12`, or `12+` weeks. The final preview is published only after all steps are complete and the email is verified. `GET /v1/me` returns the saved profile; public profile reads expose only verified, published profiles.
 
 ### Discover and apply to work
 
@@ -70,9 +72,13 @@ Matches groups candidates/application cards into visible status sections, and ac
 | Method and path | Purpose | Key behavior | State |
 |---|---|---|
 | `POST /v1/auth/register`, `/v1/auth/login`, `/v1/auth/google` | Register with email/password or exchange a Google ID token. | Bridge issues access and refresh tokens; public roles are student or freelancer. Student signup requires the profile fields above. | Implemented |
+| `POST /v1/auth/verify-email` | Verify a newly registered email. | Consume a one-time expiring token; required for email/password login. | Implemented |
+| `POST /v1/auth/forgot-password`, `/v1/auth/reset-password` | Request a password reset and set a new password. | Generic request response; one-time expiring reset tokens; successful reset revokes refresh sessions. | Implemented |
 | `POST /v1/auth/refresh`, `/v1/auth/logout` | Rotate or revoke a refresh session family. | Refresh token; only hashes are stored. | Implemented |
 | `GET /v1/me` | Read Bridge user ID, role, and student profile if present. | Require a valid Bridge bearer JWT. | Implemented |
-| `PATCH /v1/me/profile` | Edit profile. | Require bearer JWT; accept only editable fields. | Proposed |
+| `PUT /v1/me/student-profile` | Save student profile steps. | Authenticated student only; partial updates preserve fields saved in other steps. | Implemented |
+| Profile publication operation (see OpenAPI) | Publish the final profile preview. | Requires verified email and complete required profile data. | Implemented |
+| `GET /v1/students/{user_id}/profile` | Read a public student profile. | Only verified, published profiles are visible; private account fields are excluded. | Implemented |
 | `GET /v1/tasks` | Browse tasks. | Authenticated; returns open tasks with deadline today or later (UTC date); UUID cursor pagination (`limit` 1–100, default 20). Skill/budget filters are not implemented. | Implemented |
 | `GET /v1/me/tasks` | List the caller's tasks. | Freelancer only; includes open and closed tasks; UUID cursor pagination. | Implemented |
 | `GET /v1/tasks/{task_id}` | Read task details. | Authenticated users can read open, unexpired tasks; the owner can also read their closed or expired task. | Implemented |

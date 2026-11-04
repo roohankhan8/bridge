@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://bridge:bridge@localhost:5433/bridge"
     auth_jwt_secret: str | None = None
     google_client_ids: list[str] = Field(default_factory=list)
+    public_app_url: str = "http://localhost:3000"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

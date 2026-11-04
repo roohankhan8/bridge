@@ -22,7 +22,7 @@ Set `AUTH_JWT_SECRET` in `.env` to a random value of at least 32 characters. Gen
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Set `GOOGLE_CLIENT_IDS` to a JSON array of the mobile app's Google OAuth client IDs. Keep the signing secret on the server; Google ID-token verification does not need a Google client secret.
+Set `GOOGLE_CLIENT_IDS` to a JSON array of the mobile app's Google OAuth client IDs. Configure the SMTP settings and public app URL shown in `.env.example` to deliver verification and password reset links. Keep the signing secret and mail credentials on the server; Google ID-token verification does not need a Google client secret.
 
 Then start PostgreSQL, apply migrations, and run the API:
 
@@ -38,14 +38,18 @@ The Compose project name is kept as `backend` so an existing local database volu
 
 ## Authentication routes
 
-- `POST /v1/auth/register` - create an email/password account; `student` is the default role and needs a `student_profile`. Freelancer signup uses `"role": "freelancer"` without that field. Public signup cannot grant `admin`.
-- `POST /v1/auth/login` - verify email and password.
+- `POST /v1/auth/register` - create an email/password account; student signup starts a draft profile with step-one details. Freelancer signup uses `"role": "freelancer"` without a profile. Public signup cannot grant `admin`.
+- `POST /v1/auth/verify-email` - consume the emailed verification token; email/password login is available after verification.
+- `POST /v1/auth/forgot-password` and `POST /v1/auth/reset-password` - request a reset link and set a new password. Reset requests use a generic response; resetting revokes existing refresh sessions.
+- `POST /v1/auth/login` - verify email and password for a verified account.
 - `POST /v1/auth/google` - exchange a Google ID token for Bridge tokens. New student accounts include the role and profile; existing accounts keep their saved role/profile. Matching an existing email returns `409`; identities aren’t linked implicitly.
 - `POST /v1/auth/refresh` - rotate a refresh token. Reuse revokes that session family.
 - `POST /v1/auth/logout` - revoke the presented refresh token’s entire session family.
 - `GET /v1/me` - return the user ID, role, and student profile, if present. Send the access token as `Authorization: Bearer <access-token>`.
+- `PUT /v1/me/student-profile` - save profile fields incrementally across the five onboarding steps. Profile photo and digital-footprint entries are HTTP(S) URLs. The final step publishes a complete profile for public viewing; see OpenAPI for the publish operation and field enums.
+- `GET /v1/students/{user_id}/profile` - read a verified, published student profile. Drafts are not public.
 
-Student signup includes full name, 1–20 unique skill tags (up to 60 characters each), experience (`beginner`, `intermediate`, or `advanced`), weekly availability (0–168 hours), and an optional HTTP(S) portfolio URL. Passwords use Argon2 hashes; refresh tokens are stored only as hashes. Email verification, password recovery, and account linking aren’t implemented. Admin accounts must be provisioned through a trusted process.
+Student profiles collect education and photo; experience, highlights, and work links; up to three core skills with depth plus supporting skills; availability, work type, arrangement, and duration; and a final public preview. Passwords use Argon2 hashes; refresh tokens and one-time auth tokens are stored only as hashes. Admin accounts must be provisioned through a trusted process.
 
 ## API docs for mobile
 

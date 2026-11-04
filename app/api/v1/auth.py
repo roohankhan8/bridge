@@ -1,4 +1,7 @@
 from datetime import UTC, datetime
+import secrets
+from datetime import timedelta
+from hashlib import sha256
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -12,8 +15,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import hash_refresh_token, issue_tokens, signing_secret
+from app.core.email import send_auth_email
 from app.core.config import Settings, get_settings
-from app.db.models import RefreshSession, StudentProfile, User
+from app.db.models import AuthToken, RefreshSession, StudentProfile, User
 from app.db.session import get_db
 
 router = APIRouter(
@@ -30,6 +34,11 @@ RoleChoice = Literal["student", "freelancer"]
 Skill = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
 
 
+class CoreSkillInput(BaseModel):
+    name: Skill
+    depth: Literal["beginner", "intermediate", "advanced"]
+
+
 class StudentProfileInput(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "full_name": "Ayesha Khan",
@@ -39,27 +48,33 @@ class StudentProfileInput(BaseModel):
         "portfolio_url": "https://example.com/portfolio",
     }]})
 
-    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=120)] = Field(
-        description="Student's full name (2–120 characters)."
-    )
-    key_skills: list[Skill] = Field(
-        min_length=1,
-        max_length=20,
-        description="1–20 unique skill tags, each 1–60 characters.",
-        examples=[["Python", "FastAPI"]],
-    )
-    experience_level: Literal["beginner", "intermediate", "advanced"] = Field(
-        description="Self-reported experience level."
-    )
-    availability_hours_per_week: int = Field(ge=0, le=168, description="Available hours each week (0–168).")
+    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=120)] | None = None
+    key_skills: list[Skill] | None = Field(default=None, max_length=20)
+    experience_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    availability_hours_per_week: int | None = Field(default=None, ge=0, le=168)
     portfolio_url: Annotated[AnyHttpUrl, UrlConstraints(max_length=2048)] | None = Field(
         default=None, description="Optional HTTP(S) portfolio URL."
     )
+    university: str | None = Field(default=None, max_length=200)
+    degree_program: str | None = Field(default=None, max_length=200)
+    graduation_year: int | None = Field(default=None, ge=1950, le=2100)
+    profile_photo_url: Annotated[AnyHttpUrl, UrlConstraints(max_length=2048)] | None = None
+    highlights: str | None = Field(default=None, max_length=4000)
+    digital_footprint: list[Annotated[AnyHttpUrl, UrlConstraints(max_length=2048)]] | None = Field(default=None, max_length=20)
+    core_skills: list[CoreSkillInput] | None = Field(default=None, max_length=3)
+    supporting_skills: list[Skill] | None = Field(default=None, max_length=20)
+    availability: Literal["10-15", "15-20", "20-30", "full-time-40"] | None = None
+    preferred_work_types: list[Literal["paid_task", "structured_internship"]] | None = Field(default=None, max_length=2)
+    workplace_arrangement: Literal["remote", "hybrid"] | None = None
+    project_duration: Literal["<2", "2-4", "4-12", "12+"] | None = None
 
     @model_validator(mode="after")
     def skills_are_unique(self):
-        if len({skill.casefold() for skill in self.key_skills}) != len(self.key_skills):
-            raise ValueError("key_skills must be unique")
+        all_skills = (self.key_skills or []) + [skill.name for skill in self.core_skills or []] + (self.supporting_skills or [])
+        if len({skill.casefold() for skill in all_skills}) != len(all_skills):
+            raise ValueError("skills must be unique")
+        if self.preferred_work_types is not None and len(set(self.preferred_work_types)) != len(self.preferred_work_types):
+            raise ValueError("preferred_work_types must be unique")
         return self
 
 
@@ -88,6 +103,13 @@ class RegisterRequest(BaseModel):
     def require_student_profile(self):
         if self.role == "student" and self.student_profile is None:
             raise ValueError("student_profile is required for student accounts")
+        if self.role == "student":
+            first_step = ("full_name", "university", "degree_program", "graduation_year", "profile_photo_url")
+            legacy_profile = ("full_name", "key_skills", "experience_level", "availability_hours_per_week")
+            if not all(getattr(self.student_profile, field) is not None for field in first_step) and not all(
+                getattr(self.student_profile, field) is not None for field in legacy_profile
+            ):
+                raise ValueError("provide the first profile step to sign up")
         if self.role == "freelancer" and self.student_profile is not None:
             raise ValueError("student_profile is only valid for student accounts")
         return self
@@ -143,6 +165,34 @@ class TokenResponse(BaseModel):
     expires_in: int = Field(description="Access-token lifetime in seconds.")
 
 
+class EmailRequest(BaseModel):
+    email: EmailStr
+
+
+class TokenRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+
+
+class PasswordResetRequest(TokenRequest):
+    password: str = Field(min_length=8, max_length=128)
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+def create_auth_token(db: Session, user: User, purpose: str) -> str:
+    raw = secrets.token_urlsafe(32)
+    db.add(AuthToken(user_id=user.id, purpose=purpose, token_hash=sha256(raw.encode()).hexdigest(), expires_at=datetime.now(UTC) + timedelta(hours=1)))
+    return raw
+
+
+def token_expired(expires_at: datetime, now: datetime) -> bool:
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at <= now
+
+
 def normalize_email(email: str) -> str:
     return email.strip().casefold()
 
@@ -153,10 +203,22 @@ def add_student_profile(db: Session, user: User, profile: StudentProfileInput | 
             StudentProfile(
                 user_id=user.id,
                 full_name=profile.full_name,
-                key_skills=profile.key_skills,
+                key_skills=profile.key_skills or [],
                 experience_level=profile.experience_level,
                 availability_hours_per_week=profile.availability_hours_per_week,
                 portfolio_url=str(profile.portfolio_url) if profile.portfolio_url else None,
+                university=profile.university,
+                degree_program=profile.degree_program,
+                graduation_year=profile.graduation_year,
+                profile_photo_url=str(profile.profile_photo_url) if profile.profile_photo_url else None,
+                highlights=profile.highlights,
+                digital_footprint=[str(url) for url in profile.digital_footprint or []],
+                core_skills=[skill.model_dump() for skill in profile.core_skills or []],
+                supporting_skills=profile.supporting_skills or [],
+                availability=profile.availability,
+                preferred_work_types=profile.preferred_work_types or [],
+                workplace_arrangement=profile.workplace_arrangement,
+                project_duration=profile.project_duration,
             )
         )
 
@@ -206,7 +268,7 @@ def verify_google_token(token: str, settings: Settings) -> dict:
 
 @router.post(
     "/register",
-    response_model=TokenResponse,
+    response_model=MessageResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a Bridge account",
     responses={409: {"description": "An account with this email already exists."}, 422: {"description": "Request fields failed validation."}, 503: {"description": "Required authentication configuration is unavailable."}},
@@ -216,7 +278,7 @@ def register(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    """Create a student or freelancer account and return Bridge access and refresh tokens."""
+    """Create an account and send an email verification link."""
     signing_secret(settings)
     email = normalize_email(str(request.email))
     if db.scalar(select(User.id).where(User.email == email)) is not None:
@@ -226,17 +288,63 @@ def register(
         email=email,
         password_hash=password_hasher.hash(request.password),
         role=request.role,
+        email_verified=False,
     )
     db.add(user)
     try:
         db.flush()
         add_student_profile(db, user, request.student_profile)
-        tokens = issue_tokens(db, user, settings)
+        token = create_auth_token(db, user, "verify_email")
+        send_auth_email(settings, email, "Verify your Bridge email", f"{settings.public_app_url.rstrip('/')}/verify-email?token={token}")
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already exists") from exc
-    return tokens
+    return {"message": "Check your email to verify your account."}
+
+
+@router.post("/verify-email", response_model=MessageResponse)
+def verify_email(request: TokenRequest, db: Session = Depends(get_db)) -> dict:
+    record = db.scalar(select(AuthToken).where(AuthToken.token_hash == sha256(request.token.encode()).hexdigest(), AuthToken.purpose == "verify_email").with_for_update())
+    now = datetime.now(UTC)
+    if record is None or record.used_at is not None or token_expired(record.expires_at, now):
+        raise HTTPException(status_code=400, detail="Verification link is invalid or expired")
+    user = db.get(User, record.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Verification link is invalid or expired")
+    user.email_verified = True
+    record.used_at = now
+    db.commit()
+    return {"message": "Email verified."}
+
+
+@router.post("/forgot-password", response_model=MessageResponse)
+def forgot_password(request: EmailRequest, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict:
+    user = db.scalar(select(User).where(User.email == normalize_email(str(request.email))))
+    if user is not None and user.password_hash is not None:
+        token = create_auth_token(db, user, "reset_password")
+        db.commit()
+        try:
+            send_auth_email(settings, user.email, "Reset your Bridge password", f"{settings.public_app_url.rstrip('/')}/reset-password?token={token}")
+        except HTTPException:
+            pass
+    return {"message": "If the account exists, password reset instructions have been sent."}
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+def reset_password(request: PasswordResetRequest, db: Session = Depends(get_db)) -> dict:
+    now = datetime.now(UTC)
+    record = db.scalar(select(AuthToken).where(AuthToken.token_hash == sha256(request.token.encode()).hexdigest(), AuthToken.purpose == "reset_password").with_for_update())
+    if record is None or record.used_at is not None or token_expired(record.expires_at, now):
+        raise HTTPException(status_code=400, detail="Password reset link is invalid or expired")
+    user = db.get(User, record.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Password reset link is invalid or expired")
+    user.password_hash = password_hasher.hash(request.password)
+    record.used_at = now
+    db.execute(update(RefreshSession).where(RefreshSession.user_id == user.id, RefreshSession.revoked_at.is_(None)).values(revoked_at=now))
+    db.commit()
+    return {"message": "Password has been reset."}
 
 
 @router.post(
@@ -255,7 +363,7 @@ def login(
     user = db.scalar(select(User).where(User.email == normalize_email(str(request.email))))
     encoded_password = user.password_hash if user and user.password_hash else dummy_password_hash
     password_valid = password_hasher.verify(request.password, encoded_password)
-    if user is None or user.password_hash is None or not password_valid:
+    if user is None or user.password_hash is None or not password_valid or not user.email_verified:
         raise unauthorized()
     tokens = issue_tokens(db, user, settings)
     db.commit()
