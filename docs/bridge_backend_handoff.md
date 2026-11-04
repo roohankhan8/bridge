@@ -1,4 +1,4 @@
-# Bridge Backend Engineering Handoff
+﻿# Bridge Backend Engineering Handoff
 
 **Student talent marketplace | Python API service and screen-to-backend handoff**
 
@@ -17,9 +17,9 @@ This handoff translates the visible Bridge mobile prototype into backend work ar
 | Database | PostgreSQL | Transactional persistence for profiles, tasks, applications, conversations, and messages. |
 | Database access | SQLAlchemy 2.x | ORM and transaction/session management. |
 | Schema migrations | Alembic | Versioned database schema changes. |
-| Authentication | Supabase Auth | Email/password and Google sign-in; clients send Supabase access JWTs to the API. |
+| Authentication | Bridge Auth API with Google ID token verification | Bridge owns email/password accounts and sessions; clients exchange Google ID tokens and use Bridge access JWTs. |
 
-The mobile app calls FastAPI; it does not access marketplace tables directly. The API verifies the Supabase JWT signature, issuer, and expiry using Supabase's published signing keys (JWKS), then applies object-level authorization. Cache signing keys according to library/provider guidance and refresh them safely for key rotation. Do not implement JWT cryptography manually.
+The mobile app calls FastAPI; it does not access marketplace tables directly. Bridge issues its own access and refresh tokens for email/password and Google sign-in. The API verifies Google ID tokens against configured client IDs, and validates Bridge access JWTs on protected routes.
 
 Use SQLAlchemy transaction boundaries for multi-row state changes, and PostgreSQL constraints for uniqueness and referential integrity. If the API connects with a privileged database role that bypasses row-level security, RLS is not a substitute for API authorization. Use a least-privileged database role; treat RLS as defense in depth only when the request identity is safely propagated to the database.
 
@@ -32,8 +32,8 @@ Keep one API service for the initial scope. Add a worker, queue, realtime transp
 | Splash screen | Bridge branding and loading state. | No domain operation shown; startup may later fetch session/config. |
 | Prototype launch | “Double click to open” prototype card. | Design navigation only; not a product requirement. |
 | Role selection | Student or Freelancer choice; Continue. | Persist selected account mode or use it to route onboarding. |
-| Login / signup | Email, password, Login, Google continuation, sign-up link. | Authenticate through Supabase Auth; signup and recovery details are not shown. |
-| Student onboarding | Full name, skill tags, experience level, weekly availability, portfolio link; save/continue. | Profile create/update with validated skills and optional portfolio URL. |
+| Login / signup | Email, password, Login, Google continuation, sign-up link. | Use `/v1/auth/register`, `/v1/auth/login`, and `/v1/auth/google`; signup and recovery details are not shown. |
+| Student onboarding | Full name, skill tags, experience level, weekly availability, portfolio link; save/continue. | Student registration persists a profile with validated skills, experience, availability hours per week, and optional portfolio URL. |
 | Task details | Title, image, budget, deadline, description, skills; client/task summary. | Read task detail and related client metadata. |
 | Student home | Active task count, pending payment amount, available task cards with budget and detail link. | Dashboard summary plus paginated task discovery; metric definitions remain open. |
 | Apply to task | Task summary, proposal text, portfolio highlights and edit selection. | Create application/proposal linked to task and applicant. |
@@ -49,7 +49,7 @@ Keep one API service for the initial scope. Add a worker, queue, realtime transp
 
 ### Sign in and build a student profile
 
-The user chooses Student, signs in through Supabase Auth using email/password or Google, and completes a profile with name, skills, experience, availability, and portfolio link. The mobile client obtains the Supabase session and sends its access JWT as a bearer token to FastAPI. FastAPI verifies the token and upserts only the caller's profile. The prototype does not show email verification, password reset, or signup fields.
+The user chooses Student or Freelancer and creates a Bridge account with email/password or Google sign-in. Student signup includes full name, 1-20 unique key-skill tags (up to 60 characters each), experience (`beginner`, `intermediate`, or `advanced`), weekly availability (0-168 hours), and an optional HTTP(S) portfolio URL. The client receives Bridge access and refresh tokens and sends the access JWT as a bearer token to FastAPI. `GET /v1/me` returns the Bridge user ID, role, and saved student profile. Email verification, password recovery, and account linking are not implemented.
 
 ### Discover and apply to work
 
@@ -69,8 +69,10 @@ Matches groups candidates/application cards into visible status sections, and ac
 
 | Method and path | Purpose | Key behavior |
 |---|---|---|
-| Supabase Auth SDK: sign-in, signup, OAuth, refresh, signout | Establish and manage authentication session. | Client uses Supabase Auth; do not duplicate auth endpoints in FastAPI unless a concrete requirement needs a server-owned session layer. |
-| `GET /v1/me` · `PATCH /v1/me/profile` | Read identity and edit profile. | Require verified bearer JWT; accept only editable fields. |
+| `POST /v1/auth/register`, `/v1/auth/login`, `/v1/auth/google` | Register with email/password or exchange a Google ID token. | Bridge issues access and refresh tokens; public roles are student or freelancer. Student signup requires the profile fields above. |
+| `POST /v1/auth/refresh`, `/v1/auth/logout` | Rotate or revoke a refresh session family. | Refresh token; only hashes are stored. |
+| `GET /v1/me` | Read Bridge user ID, role, and student profile if present. | Require a valid Bridge bearer JWT. |
+| `PATCH /v1/me/profile` | Edit profile when implemented. | Require bearer JWT; accept only editable fields. |
 | `GET /v1/tasks` | Browse available tasks. | Filter by skill, budget, deadline; cursor pagination; exclude non-published tasks. |
 | `GET /v1/tasks/{taskId}` | Task detail. | Include only public task and client summary fields. |
 | `POST /v1/tasks` · `PATCH /v1/tasks/{taskId}` | Create/edit task. | Owner-only; draft/publish state transition must be agreed. |
@@ -86,7 +88,8 @@ Matches groups candidates/application cards into visible status sections, and ac
 
 | Entity | Suggested fields | Notes |
 |---|---|---|
-| User | `id`, Supabase `auth_user_id`, `email` if needed, `status`, `created_at` | Auth credentials remain with Supabase Auth; enforce unique mapping to auth user ID. |
+| User | `id`, normalized unique `email`, nullable password hash, nullable Google subject, role (`admin`, `freelancer`, `student`), `created_at` | Passwords use Argon2; public signup cannot assign admin. |
+| StudentProfile | `user_id`, full name, key skills, experience level, availability hours per week, optional portfolio URL | Created with student signup and returned by `/v1/me`. |
 | Profile | `user_id`, `display_name`, `headline`, `avatar_url`, `experience_level`, `availability_hours_per_week`, `portfolio_url`, `rating_summary`, `verified_at` | Rating and verification calculation/source are unknown. |
 | Skill | `id`, `canonical_name` | Canonical catalog supports consistent filtering. |
 | ProfileSkill | `profile_id`, `skill_id`, proficiency or display order | Only add proficiency if product needs it; UI currently shows tags. |
@@ -101,13 +104,15 @@ Matches groups candidates/application cards into visible status sections, and ac
 
 ## Authentication, authorization, and privacy
 
-- Supabase Auth owns password and Google authentication. The client sends its access token to protected FastAPI routes as `Authorization: Bearer <JWT>`.
-- Validate JWT signature against Supabase signing keys/JWKS and check issuer, expiry, and relevant claims with a maintained JWT library. Never trust a user ID or role supplied only in the request body.
+- Bridge Auth owns email/password and Bridge sessions. The client sends its Bridge access token to protected FastAPI routes as `Authorization: Bearer <JWT>`.
+- Verify Google ID token signature, issuer, expiry, verified email, and configured audience with a maintained library. Validate Bridge JWT signature and claims. Never trust a user ID or role supplied only in the request body.
 - Resolve the token subject to the Bridge user/profile record. Enforce object-level authorization: task owner edits tasks and decides applications; applicant accesses only their applications; conversation members alone read/send messages.
-- Treat Student/Freelancer as product modes, not proof of authorization. Whether a user may hold both modes remains open.
+- Each account has one role: `admin`, `freelancer`, or `student`. Public registration cannot grant `admin`; admin provisioning uses a trusted process. Enforce role checks for role-restricted operations.
+- Do not link a Google identity to an existing account by email alone. Without email verification, a matching email can belong to an unverified password signup; return `409` and require a future authenticated linking flow.
+- Configure `AUTH_JWT_SECRET` with at least 32 random characters and `GOOGLE_CLIENT_IDS` as a JSON array on the API server; keep both out of client configuration.
 - Return public profile fields through an explicit allowlist. Do not expose email, session data, or private applicant details in public cards.
 - Use a least-privileged Postgres role. If privileged credentials bypass RLS, implement and test authorization in FastAPI; use RLS only as additional defense where the database connection carries safe user context.
-- Rate-limit auth-related and abuse-prone actions at an appropriate edge/API layer. Do not store Supabase secrets in the mobile app or log tokens and sensitive message contents.
+- Rate-limit auth-related and abuse-prone actions at an appropriate edge/API layer. Do not store Bridge signing secrets in the mobile app or log passwords, tokens, or sensitive message contents.
 
 ## Validation and consistency
 
@@ -127,8 +132,8 @@ Use Pydantic schemas for input shape and field constraints, with domain-level ch
 
 ## Open questions before implementation
 
-1. Are Student and Freelancer roles exclusive, switchable modes, or labels for two user types? Can one account act as both applicant and task owner?
-2. Does “Continue with Google” create an account, sign in, or both? What signup, verification, password reset, and recovery flows are needed?
+1. How should admin accounts be provisioned and audited?
+2. Which email verification and password recovery flows should be added?
 3. What exact task states are needed? The draft/review-looking control's meaning and publication rules are unclear.
 4. Are budgets fixed-price task totals, hourly rates, or estimates? What currencies and payment capabilities are in scope?
 5. Can a task accept multiple applicants? What happens to other applications after acceptance? Can proposals be edited or withdrawn?
@@ -142,7 +147,7 @@ Use Pydantic schemas for input shape and field constraints, with domain-level ch
 
 | Phase | Backend scope | Exit condition |
 |---|---|---|
-| 1. Identity and profile | Supabase JWT verification, Bridge user mapping, user modes, profile CRUD, skill catalog. | A signed-in user can save/read their profile with enforced field permissions. |
+| 1. Identity and profile | Bridge auth APIs, Google token verification, roles, student onboarding profile, skill catalog. | A signed-in user can save/read their profile with enforced field permissions. |
 | 2. Marketplace | Task CRUD/status, browse/detail, application submit/list/decision. | An owner can publish and review applications; a student can browse and apply. |
 | 3. Match and messaging | Match/status list, conversation membership, message history/send. | Only authorized participants can access a conversation; decisions are consistent under retries/concurrency. |
 | 4. Dashboard metrics | Active tasks, pending payment display, ratings/verification aggregates. | Metric definitions and source data are agreed and values reconcile. |

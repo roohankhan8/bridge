@@ -10,7 +10,7 @@ This TRD defines the selected backend technology baseline and technical requirem
 
 ### In scope
 
-- Supabase Auth integration for the visible email/password and Google sign-in paths.
+- Bridge-owned email/password authentication and Google ID token exchange.
 - A separately deployed, versioned HTTPS API service that mediates all marketplace data access.
 - Bridge user mapping, user modes, profiles, and skills.
 - Task creation, publication/discovery, details, required skills, and ownership.
@@ -31,14 +31,14 @@ Payments/payouts, escrow, ratings algorithms, verification workflows, attachment
 | Persistence | PostgreSQL | Store transactional marketplace records with foreign keys, unique constraints, and indexes. |
 | ORM/session management | SQLAlchemy 2.x | Use explicit short-lived sessions and transaction boundaries for database work. |
 | Schema migration | Alembic | Version and review schema changes; deploy migrations in a controlled release step. |
-| Identity provider | Supabase Auth | Own sign-in, signup, OAuth, refresh, and signout unless a concrete requirement changes that boundary. |
+| Identity and sessions | Bridge Auth API | Own email/password accounts, Google token exchange, Bridge access JWTs, and refresh sessions. |
 | API authorization | FastAPI application layer | Verify token identity, resolve Bridge user, and authorize every object operation. |
 
 ### Request and data path
 
-The mobile client signs in through Supabase Auth, receives an access JWT, then sends that token as a bearer credential to the FastAPI service. FastAPI validates the token, resolves the external subject to a Bridge user, validates the request, checks object-level permissions, calls domain logic, and uses SQLAlchemy to persist records in PostgreSQL. The client does not connect directly to marketplace tables.
+The mobile client signs in through Bridge Auth or exchanges a Google ID token with Bridge, then sends a Bridge access JWT as a bearer credential to FastAPI. FastAPI validates the token, resolves the subject to a Bridge user and role, validates the request, checks object-level permissions, calls domain logic, and uses SQLAlchemy to persist records in PostgreSQL. The client does not connect directly to marketplace tables.
 
-Verify JWT signatures using a maintained JWT library and Supabase's published signing keys/JWKS. Check issuer, expiry, and relevant claims. Do not implement cryptographic verification manually or trust a user ID in the request body. Support key rotation according to provider guidance.
+Verify Bridge JWT signatures with a maintained JWT library. Verify Google ID tokens with Google's maintained library against configured client IDs; check issuer, expiry, and verified email. Do not implement cryptographic verification manually or trust a user ID or role in the request body.
 
 Use the least-privileged database role that supports the API's required operations. If database credentials bypass PostgreSQL row-level security, RLS does not protect against application authorization bugs; FastAPI must enforce access rules and authorization tests must cover them. RLS can be added as defense in depth when request identity is safely propagated to the database.
 
@@ -50,8 +50,10 @@ All endpoints use JSON, a version prefix, consistent error envelopes, and ISO-86
 
 | Method/path or client action | Requirement | Authorization |
 |---|---|---|
-| Supabase Auth SDK: email/password, Google OAuth, refresh, signout | Establish and manage identity session. | Provider-managed; public actions rate-limited. |
-| `GET /v1/me` | Return caller identity and supported user mode(s). | Valid Supabase JWT. |
+| `POST /v1/auth/register` and `/login` | Create or authenticate an email/password account. | Public, rate-limited; Argon2 password hashes. |
+| `POST /v1/auth/google` | Verify Google ID token and establish a Bridge session. | Public, rate-limited; valid ID token with verified email and configured audience. New students include their profile fields. |
+| `POST /v1/auth/refresh` and `/logout` | Rotate a refresh token or revoke its session family. | Presented refresh token. |
+| `GET /v1/me` | Return Bridge user ID, role, and student profile if present. | Valid Bridge access JWT. |
 | `PATCH /v1/me/profile` | Update allowlisted profile fields. | Authenticated, self only. |
 | `GET /v1/tasks` | Search/browse published tasks with filters and cursor. | Public vs authenticated policy TBD. |
 | `GET /v1/tasks/{id}` | Return public task details. | Public visibility policy TBD. |
@@ -71,8 +73,8 @@ Use a stable error shape with machine-readable code, human-readable message, opt
 
 | Entity | Core attributes and constraints |
 |---|---|
-| User | ID, unique Supabase auth user ID, optional normalized email, account status, timestamps. |
-| UserMode | User ID and mode (student, task_owner); cardinality awaits product decision. |
+| User | ID, normalized unique email, nullable password hash and Google subject, role (`admin`, `freelancer`, `student`), timestamps. |
+| StudentProfile | User ID, full name, key skills, experience level, weekly availability hours, optional portfolio URL. |
 | Profile | User ID, display name, headline, avatar URL, experience level, weekly availability, portfolio URL. Public response uses explicit allowlist. |
 | Skill | Canonical ID and display name. |
 | ProfileSkill | Profile ID, skill ID, optional ordering; unique pair. |
@@ -101,6 +103,7 @@ Proposed task states: draft, published, closed, cancelled. Proposed application 
 - Validate bearer JWT signature and claims; use generic auth failure responses.
 - Validate skill IDs against the catalog and limit count/duplicates.
 - Enforce valid experience-level enum and non-negative bounded availability.
+- Student signup requires full name, 1-20 unique skill tags (up to 60 characters each), experience `beginner|intermediate|advanced`, weekly availability of 0-168 hours, and an optional HTTP(S) portfolio URL.
 - Accept only approved URL schemes for portfolio/avatar URLs; never fetch user-provided URLs server-side as validation.
 - Validate title, description, budget/currency, deadline, and task state at API and domain boundaries.
 - Reject proposals for closed/ineligible tasks; enforce duplicate policy under concurrent requests.
@@ -109,11 +112,13 @@ Proposed task states: draft, published, closed, cancelled. Proposed application 
 
 ## Security and privacy
 
-- Use TLS for all network traffic. Supabase Auth handles password storage and OAuth flows; the Bridge API must not receive or log raw passwords.
-- Validate Supabase JWTs on the server and map provider subject to an internal user.
+- Use TLS for all network traffic. Bridge stores Argon2 password hashes and never logs raw passwords.
+- Verify Google ID tokens server-side and validate Bridge JWTs; map authenticated identities to internal users.
+- Do not link Google and password identities based on matching email alone: email verification is not implemented, so an existing-email collision returns `409`.
 - Apply least privilege and object-level authorization on every task, application, profile, and conversation request.
 - Store only necessary personal data. Exclude email and internal identifiers from public profile payloads unless explicitly approved.
-- Protect Supabase server secrets and database credentials in a managed secret store; never put service-role keys in the client.
+- Protect Bridge signing keys and database credentials in a managed secret store; never put them in the client.
+- Configure `AUTH_JWT_SECRET` (at least 32 random characters) and `GOOGLE_CLIENT_IDS` (JSON array) on the API server. Health works without them; auth routes fail closed when their settings are missing.
 - Do not log bearer tokens, auth credentials, message bodies, or unnecessary personal data.
 - Define account deletion, retention, abuse reporting, moderation, and audit event requirements before production.
 
@@ -133,15 +138,15 @@ Numeric SLOs are not in the source and must be set by the owning team. Before la
 - Contract tests cover success, validation failures, authentication failures, and forbidden access for each private route.
 - Authorization tests use multiple users to verify owner/applicant/member boundaries.
 - Concurrency tests cover duplicate application submission and competing accept decisions.
-- Integration tests cover Supabase token verification, profile save, task publish, browse, apply, review, accept, conversation read/send.
+- Integration checks cover Bridge token verification, Google token exchange, student signup profile, task publish, browse, apply, review, accept, conversation read/send.
 - Verify no private fields appear in public profile/task responses.
 - Product acceptance approves state definitions, error messages, pagination, and user-mode rules.
 
 ## Open technical and product decisions
 
-1. Supabase project configuration, JWT signing-key mode, and deployment/hosting target for FastAPI and PostgreSQL.
+1. Google OAuth client IDs and deployment/hosting target for FastAPI and PostgreSQL.
 2. Public versus authenticated task/profile visibility.
-3. User mode cardinality and switching.
+3. Admin account provisioning and audit process.
 4. Currency representation, supported currencies, and whether payments are planned.
 5. Task/application cardinalities, state machine, and task closure behavior after acceptance.
 6. Chat realtime requirement, notification delivery, read receipts, retention, and conversation eligibility.

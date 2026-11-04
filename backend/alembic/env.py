@@ -3,6 +3,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.models import RefreshSession, StudentProfile, User  # noqa: F401
 
 config = context.config
 settings = get_settings()

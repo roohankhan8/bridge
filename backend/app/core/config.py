@@ -1,13 +1,14 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     app_env: str = "development"
-    database_url: str = "postgresql+psycopg://bridge:bridge@localhost:5432/bridge"
-    supabase_url: str | None = None
-    supabase_audience: str = "authenticated"
+    database_url: str = "postgresql+psycopg://bridge:bridge@localhost:5433/bridge"
+    auth_jwt_secret: str | None = None
+    google_client_ids: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(
         env_file=".env",
