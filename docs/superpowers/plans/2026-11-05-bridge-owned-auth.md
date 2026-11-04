@@ -31,12 +31,12 @@
 ### Task 1: Add auth persistence and settings
 
 **Files:**
-- Create: `backend/app/db/models.py`
-- Modify: `backend/app/core/config.py`
-- Modify: `backend/alembic/env.py`
-- Create: `backend/alembic/versions/0002_auth.py`
-- Modify: `backend/.env.example`
-- Modify: `backend/pyproject.toml`
+- Create: `app/db/models.py`
+- Modify: `app/core/config.py`
+- Modify: `alembic/env.py`
+- Create: `alembic/versions/0002_auth.py`
+- Modify: `.env.example`
+- Modify: `pyproject.toml`
 
 **Interfaces:**
 - `User`: UUID `id`, normalized unique `email`, nullable `password_hash`, nullable unique `google_sub`, role constrained to `admin|freelancer|student` (default `student`), creation timestamp.
@@ -52,11 +52,11 @@
 ### Task 2: Implement Bridge token verification and auth routes
 
 **Files:**
-- Create: `backend/app/core/auth.py`
-- Create: `backend/app/api/v1/auth.py`
-- Modify: `backend/app/api/dependencies.py`
-- Modify: `backend/app/api/v1/me.py`
-- Modify: `backend/app/api/v1/router.py`
+- Create: `app/core/auth.py`
+- Create: `app/api/v1/auth.py`
+- Modify: `app/api/dependencies.py`
+- Modify: `app/api/v1/me.py`
+- Modify: `app/api/v1/router.py`
 
 **Interfaces:**
 - `get_current_user(...) -> User`: validate Bridge bearer JWT and resolve its UUID subject to an active database user.
@@ -76,13 +76,12 @@
 ### Task 3: Update project documentation
 
 **Files:**
-- Modify: `backend/README.md`
 - Modify: `README.md`
 - Modify: `docs/bridge_backend_handoff.md`
 - Modify: `docs/mds/bridge_backend_handoff.md`
 - Modify: `docs/mds/bridge_trd.md`
 
-- [ ] Document database migration, local Bridge signing secret, Google client IDs, auth request/response shapes, and how clients send Bridge access tokens.
+- [ ] Document database migration, local Bridge signing secret, Google client IDs, auth request/response shapes, and how clients send Bridge access tokens in the root README.
 - [ ] Remove current-state claims that Supabase owns sign-in or that Supabase JWTs protect the API; leave dated historical design artifacts unchanged.
 - [ ] State that no Supabase accounts need migration and that recovery/verification flows are future work.
 

@@ -60,7 +60,7 @@ Remove `SUPABASE_URL` and Supabase audience settings. Add a required Bridge JWT 
 - Email/password registration and login, Google ID token exchange, refresh rotation, and logout have documented request/response contracts and correct persistence behavior.
 - `/v1/me` accepts only valid Bridge access tokens and identifies the Bridge user.
 - Database schema can be created and rolled back through Alembic.
-- Backend README and auth handoff documentation describe the new configuration and flow.
+- Root README and auth handoff documentation describe the new configuration and flow.
 
 ## Builder decisions
 
