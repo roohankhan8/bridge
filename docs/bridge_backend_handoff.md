@@ -53,49 +53,51 @@ The user chooses Student or Freelancer and creates a Bridge account with email/p
 
 ### Discover and apply to work
 
-Student home presents available tasks and summary metrics. The student opens task details, writes a proposal, selects portfolio highlights, and submits. Recommended application lifecycle: pending → accepted or rejected; withdrawal, editing after submission, and resubmission are not visibly specified.
+Students browse authenticated task listings and open task details, then submit a proposal before the task deadline. The API allows one application per student per task. Applications move from pending to accepted or rejected; repeating the same decision is safe, while changing a settled decision is rejected. Proposal editing and withdrawal are not part of the current API.
 
 ### Client posts and reviews a task
 
-Freelancer/client home offers Post New Task. The task form collects title, description, required skills, budget, and deadline. Applicants are shown with profile evidence and Accept/Reject controls. Save as draft versus publication behavior needs clarification.
+Freelancers create open tasks with a title, description, required skills, PKR budget, and calendar-date deadline. They can edit open tasks, close their own tasks, review applications, and accept or reject pending applications. Draft/review states are not part of the current API.
 
 ### Match and message
 
 Matches groups candidates/application cards into visible status sections, and accepted matches expose Open Chat. A conversation screen shows messages and a project goal/progress card. Recommended: allow conversation access only for an accepted application or another explicitly approved relationship; enforce membership for every read/send.
 
-## Suggested API surface
+## API surface
 
-**Convention:** Example REST paths and payload names below are proposals. Use `/v1`, JSON, a consistent error envelope, cursor pagination, and ISO-8601 UTC timestamps. FastAPI/Pydantic should define the request and response schemas and publish the OpenAPI contract.
+**Convention:** Use `/v1`, JSON, cursor pagination, and ISO-8601 UTC timestamps. Task and application rows marked **Implemented** describe the current API; other rows remain proposals. FastAPI/Pydantic schemas publish the OpenAPI contract.
 
-| Method and path | Purpose | Key behavior |
+| Method and path | Purpose | Key behavior | State |
 |---|---|---|
-| `POST /v1/auth/register`, `/v1/auth/login`, `/v1/auth/google` | Register with email/password or exchange a Google ID token. | Bridge issues access and refresh tokens; public roles are student or freelancer. Student signup requires the profile fields above. |
-| `POST /v1/auth/refresh`, `/v1/auth/logout` | Rotate or revoke a refresh session family. | Refresh token; only hashes are stored. |
-| `GET /v1/me` | Read Bridge user ID, role, and student profile if present. | Require a valid Bridge bearer JWT. |
-| `PATCH /v1/me/profile` | Edit profile when implemented. | Require bearer JWT; accept only editable fields. |
-| `GET /v1/tasks` | Browse available tasks. | Filter by skill, budget, deadline; cursor pagination; exclude non-published tasks. |
-| `GET /v1/tasks/{taskId}` | Task detail. | Include only public task and client summary fields. |
-| `POST /v1/tasks` · `PATCH /v1/tasks/{taskId}` | Create/edit task. | Owner-only; draft/publish state transition must be agreed. |
-| `POST /v1/tasks/{taskId}/applications` | Submit proposal. | One active application per user/task unless product chooses otherwise; idempotency recommended. |
-| `GET /v1/tasks/{taskId}/applications` | Review applicants. | Task owner only; paginated applicant cards. |
-| `PATCH /v1/applications/{applicationId}` | Accept/reject application. | Owner-only; transactional state transition; handle concurrent decisions. |
-| `GET /v1/me/applications` · `GET /v1/me/matches` | Student status lists. | Expose only caller's applications and permitted match states. |
-| `GET /v1/profiles/{profileId}` | Profile detail. | Return public profile fields; redact private account data. |
-| `GET /v1/conversations` · `GET /v1/conversations/{id}/messages` | List/read conversations. | Member-only, ordered by sent time, cursor paginated. |
-| `POST /v1/conversations/{id}/messages` | Send message. | Member-only; validate body; persist and return canonical message. |
+| `POST /v1/auth/register`, `/v1/auth/login`, `/v1/auth/google` | Register with email/password or exchange a Google ID token. | Bridge issues access and refresh tokens; public roles are student or freelancer. Student signup requires the profile fields above. | Implemented |
+| `POST /v1/auth/refresh`, `/v1/auth/logout` | Rotate or revoke a refresh session family. | Refresh token; only hashes are stored. | Implemented |
+| `GET /v1/me` | Read Bridge user ID, role, and student profile if present. | Require a valid Bridge bearer JWT. | Implemented |
+| `PATCH /v1/me/profile` | Edit profile. | Require bearer JWT; accept only editable fields. | Proposed |
+| `GET /v1/tasks` | Browse tasks. | Authenticated; returns open tasks with deadline today or later (UTC date); UUID cursor pagination (`limit` 1–100, default 20). Skill/budget filters are not implemented. | Implemented |
+| `GET /v1/me/tasks` | List the caller's tasks. | Freelancer only; includes open and closed tasks; UUID cursor pagination. | Implemented |
+| `GET /v1/tasks/{task_id}` | Read task details. | Authenticated users can read open, unexpired tasks; the owner can also read their closed or expired task. | Implemented |
+| `POST /v1/tasks` | Create a task. | Freelancer only. Required title, description, positive PKR budget (up to two decimal places), deadline date (today or later), and 1–20 unique required skills (1–60 characters each). New tasks are open. | Implemented |
+| `PATCH /v1/tasks/{task_id}` | Edit a task. | Owner only; open tasks only; partial updates. | Implemented |
+| `POST /v1/tasks/{task_id}/close` | Close a task. | Owner only; one-way; closed tasks stop accepting applications. | Implemented |
+| `POST /v1/tasks/{task_id}/applications` | Submit a proposal. | Student only; one application per student/task; task must be open and unexpired; proposal is 1–5,000 characters. | Implemented |
+| `GET /v1/tasks/{task_id}/applications` | Review applicants. | Task owner only; UUID cursor pagination (`limit` 1–100, default 20). | Implemented |
+| `PATCH /v1/applications/{application_id}` | Accept/reject an application. | Owner only; pending → accepted/rejected. Same-decision retries are safe; a conflicting later decision returns `409`. Decisions do not close the task or change other applications. | Implemented |
+| `GET /v1/me/applications` · `GET /v1/me/matches` | Student status lists. | Expose only caller's applications and permitted match states. | Proposed |
+| `GET /v1/profiles/{profileId}` | Profile detail. | Return public profile fields; redact private account data. | Proposed |
+| `GET /v1/conversations` · `GET /v1/conversations/{id}/messages` | List/read conversations. | Member-only, ordered by sent time, cursor paginated. | Proposed |
+| `POST /v1/conversations/{id}/messages` | Send message. | Member-only; validate body; persist and return canonical message. | Proposed |
 
-## Suggested data model
+## Current and suggested data model
 
-| Entity | Suggested fields | Notes |
+| Entity | Fields | Notes |
 |---|---|---|
 | User | `id`, normalized unique `email`, nullable password hash, nullable Google subject, role (`admin`, `freelancer`, `student`), `created_at` | Passwords use Argon2; public signup cannot assign admin. |
 | StudentProfile | `user_id`, full name, key skills, experience level, availability hours per week, optional portfolio URL | Created with student signup and returned by `/v1/me`. |
 | Profile | `user_id`, `display_name`, `headline`, `avatar_url`, `experience_level`, `availability_hours_per_week`, `portfolio_url`, `rating_summary`, `verified_at` | Rating and verification calculation/source are unknown. |
 | Skill | `id`, `canonical_name` | Canonical catalog supports consistent filtering. |
 | ProfileSkill | `profile_id`, `skill_id`, proficiency or display order | Only add proficiency if product needs it; UI currently shows tags. |
-| Task | `id`, `owner_user_id`, `title`, `description`, `budget_amount`, `currency`, `deadline_at`, `status`, timestamps | Use decimal or integer minor units plus currency; define draft/review/published states. |
-| TaskSkill | `task_id`, `skill_id` | Many-to-many required skills. |
-| Application | `id`, `task_id`, `applicant_user_id`, `proposal`, `status`, `submitted_at`, `updated_at` | Define duplicate-application policy and enforce it in the database. |
+| Task | `id`, `owner_id`, `title`, `description`, `budget` (positive PKR decimal, up to 2 places), `deadline` (date), `required_skills` (JSON list), `status` (`open`/`closed`), timestamps | Implemented. Required skills are 1–20 unique tags, each 1–60 characters. |
+| TaskApplication | `id`, `task_id`, `student_id`, `proposal`, `status` (`pending`/`accepted`/`rejected`), timestamps | Implemented. One application per student/task is enforced in the database. |
 | ApplicationPortfolioItem | `application_id`, `portfolio_item_id` or URL snapshot | UI lets applicant choose highlights; decide snapshot vs live profile reference. |
 | Conversation | `id`, `task_id` nullable, `created_at` | Tie chat to accepted work if task-scoped conversation is confirmed. |
 | ConversationMember | `conversation_id`, `user_id`, `joined_at` | Unique membership pair supports authorization. |
@@ -121,22 +123,22 @@ Use Pydantic schemas for input shape and field constraints, with domain-level ch
 | Input/action | Server-side checks to define |
 |---|---|
 | JWT | Signature, issuer, expiry, subject, and allowed authentication context; return generic 401 for invalid credentials. |
-| Skill tags | Accept known skill IDs or controlled text; cap count and length; reject duplicates. |
+| Student and task skill tags | Student profile and task APIs accept 1–20 unique, non-empty text tags up to 60 characters each. |
 | Availability | Non-negative bounded weekly hours; clarify whether required. |
 | Portfolio URL | Allow approved schemes (normally HTTPS); length limit; do not fetch arbitrary URLs from the backend. |
-| Task title/description | Required title and description limits; reject empty/whitespace-only values; safely render user text. |
-| Budget/deadline | Currency and amount range; precision; deadline timezone and whether past dates are allowed. |
-| Application | Non-empty proposal and size limit; task must be open; prevent duplicate submissions and handle concurrent close/accept. |
-| Accept/reject | Allow only valid state transitions; idempotent retries; define whether accepting one applicant closes task or rejects others. |
+| Task title/description | Title is 2–200 characters; description is 1–10,000; reject empty/whitespace-only values; safely render user text. |
+| Budget/deadline | Budget is a positive PKR decimal with at most 12 digits and 2 decimal places. Deadline is a calendar date, today or later in UTC. |
+| Application | Proposal is 1–5,000 characters; task must be open and not past its deadline; enforce one application per student/task in the database. |
+| Accept/reject | Owner may decide pending applications; same-state retries are safe, conflicting decisions return `409`. Accepting does not close the task or decide other applications. |
 | Message | Non-empty bounded body; safe display encoding; enforce membership at send time. |
 
 ## Open questions before implementation
 
 1. How should admin accounts be provisioned and audited?
 2. Which email verification and password recovery flows should be added?
-3. What exact task states are needed? The draft/review-looking control's meaning and publication rules are unclear.
-4. Are budgets fixed-price task totals, hourly rates, or estimates? What currencies and payment capabilities are in scope?
-5. Can a task accept multiple applicants? What happens to other applications after acceptance? Can proposals be edited or withdrawn?
+3. Are additional task states such as draft or review needed beyond the current open/closed API?
+4. Does the displayed budget represent a fixed task total, an hourly rate, or an estimate? Payment capabilities remain out of scope.
+5. Should a future API allow proposals to be edited or withdrawn? The current API permits one application per student/task and leaves other applications unchanged after acceptance.
 6. How are “matches” generated and what do accepted, pending, and other visible groups mean operationally?
 7. What constitutes a verified profile, rating, completion percentage, earnings, or active task count?
 8. What is the data model and update permission for the chat's project goal/progress card? Are read receipts, attachments, notifications, or realtime delivery required?

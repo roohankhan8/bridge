@@ -47,6 +47,21 @@ The Compose project name is kept as `backend` so an existing local database volu
 
 Student signup includes full name, 1–20 unique skill tags (up to 60 characters each), experience (`beginner`, `intermediate`, or `advanced`), weekly availability (0–168 hours), and an optional HTTP(S) portfolio URL. Passwords use Argon2 hashes; refresh tokens are stored only as hashes. Email verification, password recovery, and account linking aren’t implemented. Admin accounts must be provisioned through a trusted process.
 
+## Task and application routes
+
+All task and application routes require a Bridge bearer access token. Budgets are positive PKR amounts with up to two decimal places; deadlines are calendar dates and may be today or later in UTC.
+
+- `POST /v1/tasks` - freelancer creates a task with `title`, `description`, `budget`, `deadline`, and 1–20 unique `required_skills`.
+- `GET /v1/tasks` - browse open tasks whose deadline has not passed. Supports UUID `cursor` and `limit` pagination (default 20, maximum 100).
+- `GET /v1/me/tasks` - freelancer lists their own open and closed tasks, with the same pagination.
+- `GET /v1/tasks/{task_id}` - read an open task; its owner can also read it after closing or expiry.
+- `PATCH /v1/tasks/{task_id}` and `POST /v1/tasks/{task_id}/close` - owner edits an open task or closes it. Closing is permanent.
+- `POST /v1/tasks/{task_id}/applications` - student submits a `proposal` once per task, while it is open and before its deadline.
+- `GET /v1/tasks/{task_id}/applications` - owner reviews paginated applications.
+- `PATCH /v1/applications/{application_id}` - owner changes a pending application to `accepted` or `rejected`. Repeating the same decision is safe; a conflicting later decision returns `409`.
+
+Task titles are 2–200 characters, descriptions 1–10,000, proposals 1–5,000, and each required skill is 1–60 characters. The API returns `404` for tasks outside the caller's owner visibility and `403` when the caller's role cannot perform the operation.
+
 ## Project documents
 
 - [Product Requirements Document](docs/pdfs/bridge_prd.pdf)
@@ -56,3 +71,5 @@ Student signup includes full name, 1–20 unique skill tags (up to 60 characters
 - [Backend Engineering Handoff (Markdown)](docs/bridge_backend_handoff.md)
 - [Bridge-owned authentication design](docs/superpowers/specs/2026-11-05-bridge-owned-auth-design.md)
 - [Bridge-owned authentication implementation plan](docs/superpowers/plans/2026-11-05-bridge-owned-auth.md)
+- [Task and application API design](docs/superpowers/specs/2026-11-05-task-applications-design.md)
+- [Task and application API implementation plan](docs/superpowers/plans/2026-11-05-task-applications.md)
