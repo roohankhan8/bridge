@@ -24,6 +24,21 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Set `GOOGLE_CLIENT_IDS` to a JSON array of the mobile app's Google OAuth client IDs. Configure the SMTP settings and public app URL shown in `.env.example` to deliver verification and password reset links. Keep the signing secret and mail credentials on the server; Google ID-token verification does not need a Google client secret.
 
+### Local email with Laragon
+
+Laragon includes Mailpit for catching development email. Set these values in `.env`:
+
+```dotenv
+SMTP_HOST=127.0.0.1
+SMTP_PORT=1025
+SMTP_USE_TLS=false
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM_EMAIL=dev@localhost
+```
+
+Mailpit needs no SMTP credentials. Open [http://localhost:8025](http://localhost:8025) to view verification and password-reset emails. `127.0.0.1` assumes the API runs directly on Windows; if it runs in a container, configure a host address reachable from that container.
+
 Then start PostgreSQL, apply migrations, and run the API:
 
 ```powershell

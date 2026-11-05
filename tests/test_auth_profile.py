@@ -24,7 +24,7 @@ class AuthProfileTests(unittest.TestCase):
         self.engine = create_engine("sqlite://")
         Base.metadata.create_all(self.engine)
         self.db = Session(self.engine)
-        self.settings = Settings(auth_jwt_secret="test-secret")
+        self.settings = Settings(auth_jwt_secret="test-secret-that-is-at-least-32-bytes")
         self.profile = {
             "full_name": "Ayesha Khan", "key_skills": ["Python"], "experience_level": "intermediate",
             "availability_hours_per_week": 20,

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     public_app_url: str = "http://localhost:3000"
     smtp_host: str | None = None
     smtp_port: int = 587
+    smtp_use_tls: bool = True
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from_email: str | None = None
