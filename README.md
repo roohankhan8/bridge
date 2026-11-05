@@ -54,7 +54,8 @@ The Compose project name is kept as `backend` so an existing local database volu
 ## Authentication routes
 
 - `POST /v1/auth/register` - create an email/password account; student signup starts a draft profile with step-one details. Freelancer signup uses `"role": "freelancer"` without a profile. Public signup cannot grant `admin`.
-- `POST /v1/auth/verify-email` - consume the emailed verification token; email/password login is available after verification.
+- `POST /v1/auth/verify-email` - verify with the emailed 8-digit code and account email. Codes expire after 10 minutes and lock after five incorrect attempts.
+- `POST /v1/auth/resend-verification` - request another verification code; responses are generic and resend is limited to once per 60 seconds.
 - `POST /v1/auth/forgot-password` and `POST /v1/auth/reset-password` - request a reset link and set a new password. Reset requests use a generic response; resetting revokes existing refresh sessions.
 - `POST /v1/auth/login` - verify email and password for a verified account.
 - `POST /v1/auth/google` - exchange a Google ID token for Bridge tokens. New student accounts include the role and profile; existing accounts keep their saved role/profile. Matching an existing email returns `409`; identities aren’t linked implicitly.

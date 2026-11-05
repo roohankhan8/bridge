@@ -19,12 +19,13 @@ class AuthEmailTests(unittest.TestCase):
         smtp_context = smtp.__enter__.return_value
 
         with patch("app.core.email.smtplib.SMTP", return_value=smtp) as smtp_factory:
-            send_auth_email(settings, "student@example.com", "Verify", "http://localhost/token")
+            send_auth_email(settings, "student@example.com", "Verify", "Your verification code is 12345678.")
 
         smtp_factory.assert_called_once_with("127.0.0.1", 1025, timeout=10)
         smtp_context.starttls.assert_not_called()
         smtp_context.login.assert_not_called()
         smtp_context.send_message.assert_called_once()
+        self.assertEqual(smtp_context.send_message.call_args.args[0].get_content(), "Your verification code is 12345678.\n")
 
     def test_starttls_remains_enabled_by_default(self):
         settings = Settings(_env_file=None, smtp_host="smtp.example.com", smtp_from_email="dev@example.com")

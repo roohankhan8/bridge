@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import hmac
 import secrets
 from datetime import timedelta
 from hashlib import sha256
@@ -173,6 +174,21 @@ class TokenRequest(BaseModel):
     token: str = Field(min_length=20, max_length=512)
 
 
+class EmailVerificationRequest(BaseModel):
+    email: EmailStr | None = None
+    code: str | None = Field(default=None, pattern=r"^\d{8}$")
+    token: str | None = Field(default=None, min_length=20, max_length=512)
+
+    @model_validator(mode="after")
+    def require_code_or_legacy_link(self):
+        if self.token is not None:
+            if self.email is not None or self.code is not None:
+                raise ValueError("send either token or email and code")
+        elif self.email is None or self.code is None:
+            raise ValueError("email and an 8-digit code are required")
+        return self
+
+
 class PasswordResetRequest(TokenRequest):
     password: str = Field(min_length=8, max_length=128)
 
@@ -185,6 +201,18 @@ def create_auth_token(db: Session, user: User, purpose: str) -> str:
     raw = secrets.token_urlsafe(32)
     db.add(AuthToken(user_id=user.id, purpose=purpose, token_hash=sha256(raw.encode()).hexdigest(), expires_at=datetime.now(UTC) + timedelta(hours=1)))
     return raw
+
+
+def create_verification_code(db: Session, user: User, settings: Settings) -> str:
+    code = f"{secrets.randbelow(100_000_000):08d}"
+    token_hash = hmac.digest(signing_secret(settings).encode(), code.encode(), "sha256").hex()
+    db.add(AuthToken(
+        user_id=user.id,
+        purpose="verify_email",
+        token_hash=token_hash,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    ))
+    return code
 
 
 def token_expired(expires_at: datetime, now: datetime) -> bool:
@@ -278,7 +306,7 @@ def register(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    """Create an account and send an email verification link."""
+    """Create an account and send an email verification code."""
     signing_secret(settings)
     email = normalize_email(str(request.email))
     if db.scalar(select(User.id).where(User.email == email)) is not None:
@@ -294,8 +322,8 @@ def register(
     try:
         db.flush()
         add_student_profile(db, user, request.student_profile)
-        token = create_auth_token(db, user, "verify_email")
-        send_auth_email(settings, email, "Verify your Bridge email", f"{settings.public_app_url.rstrip('/')}/verify-email?token={token}")
+        code = create_verification_code(db, user, settings)
+        send_auth_email(settings, email, "Verify your Bridge email", f"Your verification code is {code}. It expires in 10 minutes.\n")
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -304,18 +332,91 @@ def register(
 
 
 @router.post("/verify-email", response_model=MessageResponse)
-def verify_email(request: TokenRequest, db: Session = Depends(get_db)) -> dict:
-    record = db.scalar(select(AuthToken).where(AuthToken.token_hash == sha256(request.token.encode()).hexdigest(), AuthToken.purpose == "verify_email").with_for_update())
+def verify_email(
+    request: EmailVerificationRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
     now = datetime.now(UTC)
-    if record is None or record.used_at is not None or token_expired(record.expires_at, now):
-        raise HTTPException(status_code=400, detail="Verification link is invalid or expired")
-    user = db.get(User, record.user_id)
+    if request.token is not None:
+        token_hash = sha256(request.token.encode()).hexdigest()
+        user_id = db.scalar(select(AuthToken.user_id).where(
+            AuthToken.token_hash == token_hash,
+            AuthToken.purpose == "verify_email",
+        ))
+        user = db.scalar(select(User).where(User.id == user_id).with_for_update()) if user_id else None
+        record = db.scalar(select(AuthToken).where(
+            AuthToken.token_hash == token_hash,
+            AuthToken.purpose == "verify_email",
+        ).with_for_update().execution_options(populate_existing=True)) if user else None
+        candidate_hash = record.token_hash if record is not None else ""
+    else:
+        user = db.scalar(select(User).where(
+            User.email == normalize_email(str(request.email))
+        ).with_for_update())
+        record = db.scalar(select(AuthToken).where(
+            AuthToken.user_id == user.id,
+            AuthToken.purpose == "verify_email",
+            AuthToken.used_at.is_(None),
+        ).order_by(AuthToken.created_at.desc()).limit(1).with_for_update()) if user else None
+        candidate_hash = hmac.digest(
+            signing_secret(settings).encode(), request.code.encode(), "sha256"
+        ).hex()
+    if record is None or record.used_at is not None or record.failed_attempts >= 5 or token_expired(record.expires_at, now):
+        raise HTTPException(status_code=400, detail="Verification code is invalid or expired")
+    if request.token is None and not hmac.compare_digest(record.token_hash, candidate_hash):
+        record.failed_attempts += 1
+        if record.failed_attempts >= 5:
+            record.used_at = now
+        db.commit()
+        raise HTTPException(status_code=400, detail="Verification code is invalid or expired")
     if user is None:
-        raise HTTPException(status_code=400, detail="Verification link is invalid or expired")
+        raise HTTPException(status_code=400, detail="Verification code is invalid or expired")
     user.email_verified = True
     record.used_at = now
+    db.execute(update(AuthToken).where(
+        AuthToken.user_id == user.id,
+        AuthToken.purpose == "verify_email",
+        AuthToken.used_at.is_(None),
+        AuthToken.id != record.id,
+    ).values(used_at=now))
     db.commit()
     return {"message": "Email verified."}
+
+
+@router.post("/resend-verification", response_model=MessageResponse)
+def resend_verification(
+    request: EmailRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    response = {"message": "If the account exists and needs verification, a code has been sent."}
+    user = db.scalar(select(User).where(User.email == normalize_email(str(request.email))).with_for_update())
+    if user is None or user.email_verified or user.password_hash is None:
+        return response
+    now = datetime.now(UTC)
+    latest = db.scalar(select(AuthToken).where(
+        AuthToken.user_id == user.id,
+        AuthToken.purpose == "verify_email",
+    ).order_by(AuthToken.created_at.desc()).limit(1).with_for_update())
+    if latest is not None:
+        created_at = latest.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        if now - created_at < timedelta(seconds=60):
+            return response
+    db.execute(update(AuthToken).where(
+        AuthToken.user_id == user.id,
+        AuthToken.purpose == "verify_email",
+        AuthToken.used_at.is_(None),
+    ).values(used_at=now))
+    code = create_verification_code(db, user, settings)
+    db.commit()
+    try:
+        send_auth_email(settings, user.email, "Verify your Bridge email", f"Your verification code is {code}. It expires in 10 minutes.\n")
+    except HTTPException:
+        pass
+    return response
 
 
 @router.post("/forgot-password", response_model=MessageResponse)
@@ -325,7 +426,7 @@ def forgot_password(request: EmailRequest, db: Session = Depends(get_db), settin
         token = create_auth_token(db, user, "reset_password")
         db.commit()
         try:
-            send_auth_email(settings, user.email, "Reset your Bridge password", f"{settings.public_app_url.rstrip('/')}/reset-password?token={token}")
+            send_auth_email(settings, user.email, "Reset your Bridge password", f"Reset your password using this link: {settings.public_app_url.rstrip('/')}/reset-password?token={token}\n")
         except HTTPException:
             pass
     return {"message": "If the account exists, password reset instructions have been sent."}

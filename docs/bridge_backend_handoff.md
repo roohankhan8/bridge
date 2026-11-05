@@ -49,7 +49,7 @@ Keep one API service for the initial scope. Add a worker, queue, realtime transp
 
 ### Sign in and build a student profile
 
-The user chooses Student or Freelancer and creates a Bridge account with email/password or Google sign-in. Email/password registration sends a verification link; the account must be verified before password login. Forgot-password requests send a time-limited reset link, and successful resets revoke existing refresh sessions. Configure the SMTP settings and public app URL in `.env.example` for these emails. The client receives Bridge access and refresh tokens after sign-in and sends the access JWT as a bearer token to FastAPI.
+The user chooses Student or Freelancer and creates a Bridge account with email/password or Google sign-in. Email/password registration sends an 8-digit verification code; submit the account email and code to verify before password login. Codes expire after 10 minutes, lock after five incorrect attempts, and can be resent once per 60 seconds through a generic-response endpoint. Forgot-password requests send a time-limited reset link, and successful resets revoke existing refresh sessions. Configure the SMTP settings and public app URL in `.env.example` for these emails. The client receives Bridge access and refresh tokens after sign-in and sends the access JWT as a bearer token to FastAPI.
 
 Students can register with step-one fields only and save later steps independently through `PUT /v1/me/student-profile`. The steps collect full name, university, degree/program, graduation year and photo URL; experience, highlights and digital-footprint URLs; up to three core skills with depth plus supporting skills; availability (`10-15`, `15-20`, `20-30`, or `full-time-40`), paid-task and/or structured-internship preference, remote or hybrid arrangement, and project duration (`<2`, `2-4`, `4-12`, or `12+` weeks. The final preview is published only after all steps are complete and the email is verified. `GET /v1/me` returns the saved profile; public profile reads expose only verified, published profiles.
 
@@ -72,7 +72,8 @@ Matches groups candidates/application cards into visible status sections, and ac
 | Method and path | Purpose | Key behavior | State |
 |---|---|---|
 | `POST /v1/auth/register`, `/v1/auth/login`, `/v1/auth/google` | Register with email/password or exchange a Google ID token. | Bridge issues access and refresh tokens; public roles are student or freelancer. Student signup requires the profile fields above. | Implemented |
-| `POST /v1/auth/verify-email` | Verify a newly registered email. | Consume a one-time expiring token; required for email/password login. | Implemented |
+| `POST /v1/auth/verify-email` | Verify a newly registered email. | Submit `{ "email": "student@example.com", "code": "12345678" }`; code expires after 10 minutes and locks after five incorrect attempts. Required for email/password login. | Implemented |
+| `POST /v1/auth/resend-verification` | Resend an email verification code. | Generic response; one resend per 60 seconds. | Implemented |
 | `POST /v1/auth/forgot-password`, `/v1/auth/reset-password` | Request a password reset and set a new password. | Generic request response; one-time expiring reset tokens; successful reset revokes refresh sessions. | Implemented |
 | `POST /v1/auth/refresh`, `/v1/auth/logout` | Rotate or revoke a refresh session family. | Refresh token; only hashes are stored. | Implemented |
 | `GET /v1/me` | Read Bridge user ID, role, and student profile if present. | Require a valid Bridge bearer JWT. | Implemented |
@@ -125,7 +126,23 @@ Content-Type: application/json
 }
 ```
 
-Registration returns `201 Created` with the same token shape shown below. The placeholder password is supplied by the user; clients must not hard-code it.
+Registration returns `201 Created` with a message that a verification code was sent; it does not issue session tokens until the user verifies and logs in. The placeholder password is supplied by the user; clients must not hard-code it.
+
+Registration sends an 8-digit email verification code. Verify it before password login:
+
+```http
+POST /v1/auth/verify-email
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "student@example.com",
+  "code": "01234567"
+}
+```
+
+Codes expire after 10 minutes and allow five incorrect attempts. `POST /v1/auth/resend-verification` accepts `{"email":"student@example.com"}` and uses the same generic response for all accounts; requests are limited to one per 60 seconds. Password reset continues to use emailed links.
 
 ```http
 POST /v1/auth/login
@@ -325,15 +342,14 @@ Use Pydantic schemas for input shape and field constraints, with domain-level ch
 ## Open questions before implementation
 
 1. How should admin accounts be provisioned and audited?
-2. Which email verification and password recovery flows should be added?
-3. Are additional task states such as draft or review needed beyond the current open/closed API?
-4. Does the displayed budget represent a fixed task total, an hourly rate, or an estimate? Payment capabilities remain out of scope.
-5. Should a future API allow proposals to be edited or withdrawn? The current API permits one application per student/task and leaves other applications unchanged after acceptance.
-6. How are “matches” generated and what do accepted, pending, and other visible groups mean operationally?
-7. What constitutes a verified profile, rating, completion percentage, earnings, or active task count?
-8. What is the data model and update permission for the chat's project goal/progress card? Are read receipts, attachments, notifications, or realtime delivery required?
-9. Should profile skills and portfolio highlights be snapshotted when an application is submitted?
-10. What are retention, moderation/reporting, blocking, deletion, and audit requirements?
+2. Are additional task states such as draft or review needed beyond the current open/closed API?
+3. Does the displayed budget represent a fixed task total, an hourly rate, or an estimate? Payment capabilities remain out of scope.
+4. Should a future API allow proposals to be edited or withdrawn? The current API permits one application per student/task and leaves other applications unchanged after acceptance.
+5. How are “matches” generated and what do accepted, pending, and other visible groups mean operationally?
+6. What constitutes a verified profile, rating, completion percentage, earnings, or active task count?
+7. What is the data model and update permission for the chat's project goal/progress card? Are read receipts, attachments, notifications, or realtime delivery required?
+8. Should profile skills and portfolio highlights be snapshotted when an application is submitted?
+9. What are retention, moderation/reporting, blocking, deletion, and audit requirements?
 
 ## Recommended delivery sequence
 

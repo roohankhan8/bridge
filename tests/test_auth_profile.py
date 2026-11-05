@@ -1,5 +1,8 @@
 import unittest
+import re
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -7,8 +10,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.api.v1.auth import (
-    EmailRequest, LoginRequest, PasswordResetRequest, RegisterRequest, StudentProfileInput,
-    TokenRequest, forgot_password, login, register, reset_password, verify_email,
+    EmailRequest, EmailVerificationRequest, LoginRequest, PasswordResetRequest, RegisterRequest, StudentProfileInput,
+    TokenRequest, create_auth_token, forgot_password, login, register, resend_verification, reset_password, verify_email,
 )
 from app.api.v1.me import (
     StudentProfilePatch, publish_student_profile, read_public_student_profile,
@@ -16,7 +19,7 @@ from app.api.v1.me import (
 )
 from app.core.config import Settings
 from app.db.base import Base
-from app.db.models import RefreshSession, StudentProfile, User
+from app.db.models import AuthToken, RefreshSession, StudentProfile, User
 
 
 class AuthProfileTests(unittest.TestCase):
@@ -36,20 +39,90 @@ class AuthProfileTests(unittest.TestCase):
 
     def test_registration_requires_verification_and_reset_revokes_sessions(self):
         emails = []
-        with patch("app.api.v1.auth.send_auth_email", side_effect=lambda _s, _r, _sub, link: emails.append(link)):
+        with patch("app.api.v1.auth.send_auth_email", side_effect=lambda _s, _r, subject, body: emails.append((subject, body))):
             register(RegisterRequest(email="student@example.com", password="Password123!", student_profile=self.profile), db=self.db, settings=self.settings)
             user = self.db.query(User).one()
             with self.assertRaises(HTTPException):
                 login(LoginRequest(email=user.email, password="Password123!"), db=self.db, settings=self.settings)
-            verify_email(TokenRequest(token=emails.pop().split("token=")[1]), db=self.db)
+            verification_subject, verification_body = emails.pop()
+            code = re.search(r"\b\d{8}\b", verification_body).group()
+            self.assertEqual(verification_subject, "Verify your Bridge email")
+            self.assertNotIn("http", verification_body)
+            record = self.db.query(AuthToken).one()
+            self.assertNotEqual(record.token_hash, code)
+            verify_email(EmailVerificationRequest(email=user.email, code=code), db=self.db, settings=self.settings)
+            with self.assertRaises(HTTPException):
+                verify_email(EmailVerificationRequest(email=user.email, code=code), db=self.db, settings=self.settings)
             login(LoginRequest(email=user.email, password="Password123!"), db=self.db, settings=self.settings)
             self.assertTrue(self.db.query(RefreshSession).filter_by(user_id=user.id, revoked_at=None).count())
 
             forgot_password(EmailRequest(email=user.email), db=self.db, settings=self.settings)
-            reset_link = emails.pop()
-            reset_password(PasswordResetRequest(token=reset_link.split("token=")[1], password="NewPassword123!"), db=self.db)
+            _, reset_body = emails.pop()
+            self.assertIn("Reset your password using this link:", reset_body)
+            reset_link = re.search(r"https?://\S+", reset_body).group()
+            reset_token = parse_qs(urlparse(reset_link).query)["token"][0]
+            reset_password(PasswordResetRequest(token=reset_token, password="NewPassword123!"), db=self.db)
             self.assertEqual(self.db.query(RefreshSession).filter_by(user_id=user.id, revoked_at=None).count(), 0)
             login(LoginRequest(email=user.email, password="NewPassword123!"), db=self.db, settings=self.settings)
+
+    def test_verification_code_expires_after_ten_minutes(self):
+        email_body = []
+        with patch("app.api.v1.auth.send_auth_email", side_effect=lambda _s, _r, _sub, body: email_body.append(body)):
+            register(RegisterRequest(email="expired@example.com", password="Password123!", student_profile=self.profile), db=self.db, settings=self.settings)
+        user = self.db.query(User).one()
+        code = re.search(r"\b\d{8}\b", email_body[0]).group()
+        record = self.db.query(AuthToken).filter_by(user_id=user.id, purpose="verify_email").one()
+        record.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        self.db.commit()
+        with self.assertRaises(HTTPException) as expired:
+            verify_email(EmailVerificationRequest(email=user.email, code=code), db=self.db, settings=self.settings)
+        self.assertEqual(expired.exception.status_code, 400)
+        self.assertFalse(user.email_verified)
+
+    def test_five_wrong_codes_lock_until_resend(self):
+        email_bodies = []
+        with patch("app.api.v1.auth.send_auth_email", side_effect=lambda _s, _r, _sub, body: email_bodies.append(body)):
+            register(RegisterRequest(email="locked@example.com", password="Password123!", student_profile=self.profile), db=self.db, settings=self.settings)
+            user = self.db.query(User).one()
+            first_code = re.search(r"\b\d{8}\b", email_bodies[-1]).group()
+            wrong_code = "00000000" if first_code != "00000000" else "11111111"
+            for _ in range(5):
+                with self.assertRaises(HTTPException) as wrong:
+                    verify_email(EmailVerificationRequest(email=user.email, code=wrong_code), db=self.db, settings=self.settings)
+                self.assertEqual(wrong.exception.status_code, 400)
+            record = self.db.query(AuthToken).filter_by(user_id=user.id, purpose="verify_email").one()
+            self.assertEqual(record.failed_attempts, 5)
+            with self.assertRaises(HTTPException):
+                verify_email(EmailVerificationRequest(email=user.email, code=first_code), db=self.db, settings=self.settings)
+
+            record.created_at = datetime.now(UTC) - timedelta(seconds=61)
+            self.db.commit()
+            response = resend_verification(EmailRequest(email=user.email), db=self.db, settings=self.settings)
+            self.assertIn("If the account exists", response["message"])
+            second_code = re.search(r"\b\d{8}\b", email_bodies[-1]).group()
+            self.assertNotEqual(first_code, second_code)
+            verify_email(EmailVerificationRequest(email=user.email, code=second_code), db=self.db, settings=self.settings)
+            self.assertTrue(user.email_verified)
+
+    def test_resend_uses_generic_response_and_has_cooldown(self):
+        email_bodies = []
+        with patch("app.api.v1.auth.send_auth_email", side_effect=lambda _s, _r, _sub, body: email_bodies.append(body)):
+            register(RegisterRequest(email="cooldown@example.com", password="Password123!", student_profile=self.profile), db=self.db, settings=self.settings)
+            user = self.db.query(User).one()
+            response = resend_verification(EmailRequest(email=user.email), db=self.db, settings=self.settings)
+            self.assertIn("If the account exists", response["message"])
+            self.assertEqual(len(email_bodies), 1)
+            absent = resend_verification(EmailRequest(email="absent@example.com"), db=self.db, settings=self.settings)
+            self.assertEqual(absent["message"], response["message"])
+            self.assertEqual(len(email_bodies), 1)
+
+    def test_legacy_verification_link_is_still_accepted(self):
+        with patch("app.api.v1.auth.send_auth_email"):
+            register(RegisterRequest(email="legacy@example.com", password="Password123!", student_profile=self.profile), db=self.db, settings=self.settings)
+        user = self.db.query(User).one()
+        token = create_auth_token(self.db, user, "verify_email")
+        verify_email(EmailVerificationRequest(token=token), db=self.db, settings=self.settings)
+        self.assertTrue(user.email_verified)
 
     def test_student_profile_validates_core_skill_limit_and_options(self):
         with self.assertRaises(ValidationError):
