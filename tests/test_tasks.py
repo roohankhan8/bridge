@@ -226,10 +226,10 @@ class TaskApiTests(unittest.TestCase):
         )
 
         with self.assertRaises(HTTPException) as error:
-            list_applications(task.id, limit=20, db=self.db, user=self.other_freelancer)
+            list_applications(task.id, cursor=None, limit=20, db=self.db, user=self.other_freelancer)
         self.assertEqual(error.exception.status_code, 404)
 
-        page = list_applications(task.id, limit=20, db=self.db, user=self.freelancer)
+        page = list_applications(task.id, cursor=None, limit=20, db=self.db, user=self.freelancer)
         self.assertEqual([item.id for item in page.items], [application.id])
 
     def test_task_owner_cannot_apply_to_own_task(self):

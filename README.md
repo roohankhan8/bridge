@@ -51,6 +51,21 @@ uvicorn app.main:app --reload
 
 The Compose project name is kept as `backend` so an existing local database volume continues to be used after moving the Compose file. `GET /health` works without auth configuration. Auth routes fail closed until their required settings are present.
 
+## Container image
+
+The GitHub Actions workflow runs the unit suite and builds the container on pull requests. After tests pass, pushes to `main` and version tags (`v*`) publish `ghcr.io/roohankhan8/bridge-api`; `latest` tracks `main`, and each publish also gets a commit-SHA tag. The image includes Alembic but does not run migrations automatically.
+
+After the workflow publishes the package, pull and run it with a database URL reachable from inside the container:
+
+```powershell
+docker pull ghcr.io/roohankhan8/bridge-api:latest
+docker run --detach --name bridge-api --publish 8000:8000 --env-file .env --volume bridge_uploads:/app/uploads ghcr.io/roohankhan8/bridge-api:latest
+```
+
+Set `DATABASE_URL`, `AUTH_JWT_SECRET`, Google, and SMTP settings in `.env` as described above. The upload volume keeps locally stored photos across container replacement. Apply migrations separately with `docker run --rm --env-file .env ghcr.io/roohankhan8/bridge-api:latest alembic upgrade head`.
+
+GHCR packages are private by default. To let the frontend team pull without logging in, change the package visibility to public after the first successful publish; otherwise grant the team package read access and have each developer authenticate with `docker login ghcr.io`.
+
 ## Authentication routes
 
 - `POST /v1/auth/register` - create an email/password account; student signup starts a draft profile with step-one details, and the photo may be uploaded after email verification and login. Freelancer signup uses `"role": "freelancer"` without a profile. Public signup cannot grant `admin`.
