@@ -53,7 +53,7 @@ The Compose project name is kept as `backend` so an existing local database volu
 
 ## Container image
 
-The GitHub Actions workflow runs the unit suite and builds the container on pull requests. After tests pass, pushes to `main` and version tags (`v*`) publish `ghcr.io/roohankhan8/bridge-api`; `latest` tracks `main`, and each publish also gets a commit-SHA tag. The image includes Alembic but does not run migrations automatically.
+The GitHub Actions workflow runs the unit suite and builds the container on pull requests. After tests pass, pushes to `main` and version tags (`v*`) publish `ghcr.io/roohankhan8/bridge-api`; `latest` tracks `main`, and each publish also gets a commit-SHA tag. The current package is public and can be pulled without logging in. The image includes Alembic but does not run migrations automatically.
 
 After the workflow publishes the package, pull and run it with a database URL reachable from inside the container:
 
@@ -63,8 +63,6 @@ docker run --detach --name bridge-api --publish 8000:8000 --env-file .env --volu
 ```
 
 Set `DATABASE_URL`, `AUTH_JWT_SECRET`, Google, and SMTP settings in `.env` as described above. The upload volume keeps locally stored photos across container replacement. Apply migrations separately with `docker run --rm --env-file .env ghcr.io/roohankhan8/bridge-api:latest alembic upgrade head`.
-
-GHCR packages are private by default. To let the frontend team pull without logging in, change the package visibility to public after the first successful publish; otherwise grant the team package read access and have each developer authenticate with `docker login ghcr.io`.
 
 ## Authentication routes
 
