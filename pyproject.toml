@@ -15,6 +15,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "PyJWT[crypto]>=2.15",
     "pydantic-settings>=2.6",
+    "python-multipart>=0.0.20",
     "pwdlib[argon2]>=0.2",
     "python-dotenv>=1.0",
     "sqlalchemy>=2.0",

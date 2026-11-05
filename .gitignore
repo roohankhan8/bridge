@@ -10,3 +10,5 @@ build/
 *.egg-info/
 graphify-out
 codex-sessions
+uploads/
+design

@@ -65,6 +65,18 @@ The Compose project name is kept as `backend` so an existing local database volu
 - `PUT /v1/me/student-profile` - save profile fields incrementally across the five onboarding steps. Profile photo and digital-footprint entries are HTTP(S) URLs. The final step publishes a complete profile for public viewing; see OpenAPI for the publish operation and field enums.
 - `GET /v1/students/{user_id}/profile` - read a verified, published student profile. Drafts are not public.
 
+### Freelancer onboarding routes
+
+Freelancers use a separate profile from student profiles. All routes require a freelancer bearer access token; profile reads and photos are private to the authenticated freelancer.
+
+- `GET /v1/me/freelancer-profile` - return the saved onboarding profile, or empty defaults if onboarding has not started.
+- `PATCH /v1/me/freelancer-profile` - save one or more fields: `full_name`, `professional_title`, `company_name`, `years_experience`, `core_skills`, `areas_of_expertise`, `portfolio_url`, `linkedin_url`, `project_domains`, `delegation_types`, and `preferred_student_skill_level`. Send `[]` to clear a list; omit fields to leave them unchanged.
+- `POST /v1/me/freelancer-profile/photo` - upload a multipart field named `photo` containing a PNG or JPEG image up to 5 MB. The API stores it under `PROFILE_UPLOAD_DIR` in a private local directory and returns the profile, including its authenticated `profile_photo_url`.
+- `GET /v1/me/freelancer-profile/photo` - read the authenticated freelancer’s photo.
+- `POST /v1/me/freelancer-profile/publish` - publish after email verification and completion of the required name, professional title, experience range, and project domains.
+
+Set `PROFILE_UPLOAD_DIR` in `.env` to choose the local photo directory; it defaults to `uploads`. Local files are instance-local and are not served as public static content. Back them up or move them when changing hosts; switching to S3 will require migrating the files and profile references.
+
 Student profiles collect education and photo; experience, highlights, and work links; up to three core skills with depth plus supporting skills; availability, work type, arrangement, and duration; and a final public preview. Passwords use Argon2 hashes; refresh tokens and one-time auth tokens are stored only as hashes. Admin accounts must be provisioned through a trusted process.
 
 ## API docs for mobile

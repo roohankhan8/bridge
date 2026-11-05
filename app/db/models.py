@@ -72,6 +72,27 @@ class StudentProfile(Base):
     published: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
 
 
+class FreelancerProfile(Base):
+    __tablename__ = "freelancer_profiles"
+
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    full_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    professional_title: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    years_experience: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    core_skills: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    areas_of_expertise: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    portfolio_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    project_domains: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    delegation_types: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    preferred_student_skill_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    profile_photo_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
 
