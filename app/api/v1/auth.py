@@ -105,7 +105,7 @@ class RegisterRequest(BaseModel):
         if self.role == "student" and self.student_profile is None:
             raise ValueError("student_profile is required for student accounts")
         if self.role == "student":
-            first_step = ("full_name", "university", "degree_program", "graduation_year", "profile_photo_url")
+            first_step = ("full_name", "university", "degree_program", "graduation_year")
             legacy_profile = ("full_name", "key_skills", "experience_level", "availability_hours_per_week")
             if not all(getattr(self.student_profile, field) is not None for field in first_step) and not all(
                 getattr(self.student_profile, field) is not None for field in legacy_profile

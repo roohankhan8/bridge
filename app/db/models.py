@@ -60,6 +60,7 @@ class StudentProfile(Base):
     degree_program: Mapped[str | None] = mapped_column(String(200), nullable=True)
     graduation_year: Mapped[int | None] = mapped_column(nullable=True)
     profile_photo_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    profile_photo_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     highlights: Mapped[str | None] = mapped_column(Text, nullable=True)
     digital_footprint: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     core_skills: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)

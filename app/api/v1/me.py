@@ -1,13 +1,16 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, StringConstraints, UrlConstraints, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.config import Settings, get_settings
 from app.db.models import StudentProfile, User
 from app.api.v1.auth import CoreSkillInput
 from app.db.session import get_db
@@ -62,7 +65,7 @@ class StudentProfileResponse(BaseModel):
     university: str | None = None
     degree_program: str | None = None
     graduation_year: int | None = None
-    profile_photo_url: AnyHttpUrl | None = None
+    profile_photo_url: str | None = None
     highlights: str | None = None
     digital_footprint: list[AnyHttpUrl] = Field(default_factory=list)
     core_skills: list[dict] = Field(default_factory=list)
@@ -107,12 +110,32 @@ def read_current_user(
     return IdentityResponse(
         user_id=str(user.id),
         role=user.role,
-        student_profile=StudentProfileResponse.model_validate(profile) if profile else None,
+        student_profile=student_profile_response(profile) if profile else None,
     )
 
 
+def student_profile_response(profile: StudentProfile, *, public_photo: bool = False) -> StudentProfileResponse:
+    values = {field: getattr(profile, field) for field in StudentProfileResponse.model_fields}
+    for field in ("key_skills", "digital_footprint", "core_skills", "supporting_skills", "preferred_work_types"):
+        if values[field] is None:
+            values[field] = []
+    if profile.profile_photo_name:
+        values["profile_photo_url"] = (
+            f"/v1/students/{profile.user_id}/profile/photo"
+            if public_photo else "/v1/me/student-profile/photo"
+        )
+    elif values["profile_photo_url"] is not None:
+        values["profile_photo_url"] = str(values["profile_photo_url"])
+    return StudentProfileResponse.model_validate(values)
+
+
 @router.put("/me/student-profile", response_model=StudentProfileResponse, summary="Edit the student profile")
-def update_student_profile(request: StudentProfilePatch, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StudentProfileResponse:
+def update_student_profile(
+    request: StudentProfilePatch,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StudentProfileResponse:
     if user.role != "student":
         raise HTTPException(status_code=403, detail="Student accounts only")
     profile = db.get(StudentProfile, user.id)
@@ -121,6 +144,9 @@ def update_student_profile(request: StudentProfilePatch, user: User = Depends(ge
     values = request.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(status_code=422, detail="At least one profile field is required")
+    previous_photo_name = profile.profile_photo_name if "profile_photo_url" in values else None
+    if "profile_photo_url" in values:
+        profile.profile_photo_name = None
     core_skills = request.core_skills if "core_skills" in values else profile.core_skills
     supporting_skills = request.supporting_skills if "supporting_skills" in values else profile.supporting_skills
     skill_names = [skill.name if isinstance(skill, CoreSkillInput) else skill["name"] for skill in core_skills]
@@ -142,7 +168,94 @@ def update_student_profile(request: StudentProfilePatch, user: User = Depends(ge
     profile.published_at = None
     db.commit()
     db.refresh(profile)
-    return StudentProfileResponse.model_validate(profile)
+    if previous_photo_name:
+        (settings.profile_upload_dir / "student_profiles" / Path(previous_photo_name).name).unlink(missing_ok=True)
+    return student_profile_response(profile)
+
+
+@router.post("/me/student-profile/photo", response_model=StudentProfileResponse, summary="Upload a student profile photo")
+def upload_student_photo(
+    photo: Annotated[UploadFile, File(description="PNG or JPEG image, up to 5 MB.")],
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StudentProfileResponse:
+    if user.role != "student":
+        raise HTTPException(status_code=403, detail="Student accounts only")
+    content = photo.file.read(5 * 1024 * 1024 + 1)
+    if not content:
+        raise HTTPException(status_code=422, detail="Photo cannot be empty")
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Photo must be 5 MB or smaller")
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        extension, media_type = ".png", "image/png"
+    elif content.startswith(b"\xff\xd8\xff"):
+        extension, media_type = ".jpg", "image/jpeg"
+    else:
+        raise HTTPException(status_code=415, detail="Photo must be a PNG or JPEG image")
+    if photo.content_type not in {media_type, "image/jpg" if media_type == "image/jpeg" else media_type}:
+        raise HTTPException(status_code=415, detail="Photo content type does not match the image")
+
+    profile = db.get(StudentProfile, user.id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Student profile not found")
+    upload_dir = settings.profile_upload_dir / "student_profiles"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid4().hex}{extension}"
+    destination = upload_dir / filename
+    destination.write_bytes(content)
+    previous_name = profile.profile_photo_name
+    try:
+        profile.profile_photo_name = filename
+        profile.profile_photo_url = None
+        profile.published_at = None
+        db.commit()
+        db.refresh(profile)
+    except Exception:
+        db.rollback()
+        destination.unlink(missing_ok=True)
+        raise
+    if previous_name:
+        (upload_dir / Path(previous_name).name).unlink(missing_ok=True)
+    return student_profile_response(profile)
+
+
+@router.get("/me/student-profile/photo", summary="Read the authenticated student's profile photo")
+def read_student_profile_photo(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    if user.role != "student":
+        raise HTTPException(status_code=403, detail="Student accounts only")
+    profile = db.get(StudentProfile, user.id)
+    if profile is None or profile.profile_photo_name is None:
+        raise HTTPException(status_code=404, detail="Profile photo not found")
+    photo_path = settings.profile_upload_dir / "student_profiles" / Path(profile.profile_photo_name).name
+    if not photo_path.is_file():
+        raise HTTPException(status_code=404, detail="Profile photo not found")
+    media_type = "image/png" if photo_path.suffix == ".png" else "image/jpeg"
+    return FileResponse(photo_path, media_type=media_type)
+
+
+@router.get("/students/{user_id}/profile/photo", summary="Read a published student profile photo")
+def read_public_student_profile_photo(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    profile = db.scalar(select(StudentProfile).join(User).where(
+        StudentProfile.user_id == user_id,
+        StudentProfile.published_at.is_not(None),
+        User.email_verified.is_(True),
+    ))
+    if profile is None or profile.profile_photo_name is None:
+        raise HTTPException(status_code=404, detail="Student profile photo not found")
+    photo_path = settings.profile_upload_dir / "student_profiles" / Path(profile.profile_photo_name).name
+    if not photo_path.is_file():
+        raise HTTPException(status_code=404, detail="Student profile photo not found")
+    media_type = "image/png" if photo_path.suffix == ".png" else "image/jpeg"
+    return FileResponse(photo_path, media_type=media_type)
 
 
 @router.post("/me/student-profile/publish", response_model=StudentProfileResponse, summary="Publish the completed student profile")
@@ -157,12 +270,12 @@ def publish_student_profile(user: User = Depends(get_current_user), db: Session 
     required = (profile.full_name, profile.university, profile.degree_program, profile.graduation_year,
                 profile.experience_level, profile.highlights, profile.core_skills, profile.availability,
                 profile.preferred_work_types, profile.workplace_arrangement, profile.project_duration)
-    if not all(required) or not profile.profile_photo_url or not profile.core_skills:
+    if not all(required) or not (profile.profile_photo_url or profile.profile_photo_name) or not profile.core_skills:
         raise HTTPException(status_code=409, detail="Complete all profile steps before publishing")
     profile.published_at = datetime.now(UTC)
     db.commit()
     db.refresh(profile)
-    return StudentProfileResponse.model_validate(profile)
+    return student_profile_response(profile)
 
 
 @router.get("/students/{user_id}/profile", response_model=StudentProfileResponse, summary="View the public student profile")
@@ -174,4 +287,4 @@ def read_public_student_profile(user_id: UUID, db: Session = Depends(get_db)) ->
     ))
     if profile is None:
         raise HTTPException(status_code=404, detail="Student profile not found")
-    return StudentProfileResponse.model_validate(profile)
+    return student_profile_response(profile, public_photo=True)

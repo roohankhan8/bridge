@@ -1,13 +1,17 @@
 import unittest
 import re
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from starlette.datastructures import Headers
 
 from app.api.v1.auth import (
     EmailRequest, EmailVerificationRequest, LoginRequest, PasswordResetRequest, RegisterRequest, StudentProfileInput,
@@ -15,7 +19,8 @@ from app.api.v1.auth import (
 )
 from app.api.v1.me import (
     StudentProfilePatch, publish_student_profile, read_public_student_profile,
-    update_student_profile,
+    read_public_student_profile_photo, read_student_profile_photo, update_student_profile,
+    upload_student_photo,
 )
 from app.core.config import Settings
 from app.db.base import Base
@@ -147,6 +152,18 @@ class AuthProfileTests(unittest.TestCase):
         self.assertIsNone(profile.experience_level)
         self.assertIsNone(profile.availability_hours_per_week)
 
+    def test_registration_can_start_first_step_before_photo_upload(self):
+        step_one = {
+            "full_name": "Ayesha Khan", "university": "Example University",
+            "degree_program": "Computer Science", "graduation_year": 2027,
+        }
+        request = RegisterRequest(email="photo-later@example.com", password="Password123!", student_profile=step_one)
+        with patch("app.api.v1.auth.send_auth_email"):
+            register(request, db=self.db, settings=self.settings)
+        profile = self.db.query(StudentProfile).one()
+        self.assertEqual(profile.full_name, "Ayesha Khan")
+        self.assertIsNone(profile.profile_photo_url)
+
     def test_profile_steps_save_independently_and_publication_is_gated(self):
         user = User(email="profile@example.com", role="student", email_verified=False)
         self.db.add(user)
@@ -186,6 +203,72 @@ class AuthProfileTests(unittest.TestCase):
         publish_student_profile(user=user, db=self.db)
         public = read_public_student_profile(user.id, db=self.db)
         self.assertEqual(public.full_name, "Ayesha Khan")
+
+    def test_student_photo_upload_stores_image_and_serves_it_to_owner_and_public_profile(self):
+        with TemporaryDirectory() as upload_root:
+            user = User(email="photo@example.com", role="student", email_verified=True)
+            self.db.add(user)
+            self.db.flush()
+            profile = StudentProfile(
+                user_id=user.id, full_name="Ayesha Khan", university="Example University",
+                degree_program="Computer Science", graduation_year=2027,
+                experience_level="intermediate", highlights="Built useful tools",
+                core_skills=[{"name": "Python", "depth": "advanced"}],
+                availability="10-15", preferred_work_types=["paid_task"],
+                workplace_arrangement="remote", project_duration="2-4",
+            )
+            self.db.add(profile)
+            self.db.commit()
+            photo = UploadFile(
+                filename="avatar.png", file=BytesIO(b"\x89PNG\r\n\x1a\nimage-bytes"),
+                headers=Headers({"content-type": "image/png"}),
+            )
+
+            uploaded = upload_student_photo(photo, user=user, db=self.db, settings=Settings(profile_upload_dir=upload_root))
+
+            saved = self.db.get(StudentProfile, user.id)
+            photo_path = Path(upload_root) / "student_profiles" / saved.profile_photo_name
+            self.assertTrue(photo_path.is_file())
+            self.assertEqual(photo_path.read_bytes(), b"\x89PNG\r\n\x1a\nimage-bytes")
+            self.assertTrue(uploaded.profile_photo_url.endswith("/me/student-profile/photo"))
+            self.assertIsNone(saved.profile_photo_url)
+            self.assertTrue(read_student_profile_photo(user=user, db=self.db, settings=Settings(profile_upload_dir=upload_root)).path)
+
+            saved.published_at = datetime.now(UTC)
+            self.db.commit()
+            public_photo = read_public_student_profile_photo(user.id, db=self.db, settings=Settings(profile_upload_dir=upload_root))
+            self.assertEqual(Path(public_photo.path), photo_path)
+
+            user.email_verified = False
+            self.db.commit()
+            with self.assertRaises(HTTPException):
+                read_public_student_profile_photo(user.id, db=self.db, settings=Settings(profile_upload_dir=upload_root))
+
+    def test_student_photo_upload_rejects_invalid_or_oversized_images(self):
+        user = User(email="invalid-photo@example.com", role="student")
+        self.db.add(user)
+        self.db.flush()
+        profile = StudentProfile(user_id=user.id)
+        self.db.add(profile)
+        self.db.commit()
+        with TemporaryDirectory() as upload_root:
+            settings = Settings(profile_upload_dir=upload_root)
+            invalid = UploadFile(
+                filename="avatar.png", file=BytesIO(b"not an image"),
+                headers=Headers({"content-type": "image/png"}),
+            )
+            with self.assertRaises(HTTPException) as invalid_response:
+                upload_student_photo(invalid, user=user, db=self.db, settings=settings)
+            self.assertEqual(invalid_response.exception.status_code, 415)
+
+            oversized = UploadFile(
+                filename="avatar.png", file=BytesIO(b"\x89PNG\r\n\x1a\n" + b"x" * (5 * 1024 * 1024)),
+                headers=Headers({"content-type": "image/png"}),
+            )
+            with self.assertRaises(HTTPException) as oversized_response:
+                upload_student_photo(oversized, user=user, db=self.db, settings=settings)
+            self.assertEqual(oversized_response.exception.status_code, 413)
+            self.assertFalse((Path(upload_root) / "student_profiles").exists())
 
 
 if __name__ == "__main__":

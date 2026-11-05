@@ -53,7 +53,7 @@ The Compose project name is kept as `backend` so an existing local database volu
 
 ## Authentication routes
 
-- `POST /v1/auth/register` - create an email/password account; student signup starts a draft profile with step-one details. Freelancer signup uses `"role": "freelancer"` without a profile. Public signup cannot grant `admin`.
+- `POST /v1/auth/register` - create an email/password account; student signup starts a draft profile with step-one details, and the photo may be uploaded after email verification and login. Freelancer signup uses `"role": "freelancer"` without a profile. Public signup cannot grant `admin`.
 - `POST /v1/auth/verify-email` - verify with the emailed 8-digit code and account email. Codes expire after 10 minutes and lock after five incorrect attempts.
 - `POST /v1/auth/resend-verification` - request another verification code; responses are generic and resend is limited to once per 60 seconds.
 - `POST /v1/auth/forgot-password` and `POST /v1/auth/reset-password` - request a reset link and set a new password. Reset requests use a generic response; resetting revokes existing refresh sessions.
@@ -62,8 +62,11 @@ The Compose project name is kept as `backend` so an existing local database volu
 - `POST /v1/auth/refresh` - rotate a refresh token. Reuse revokes that session family.
 - `POST /v1/auth/logout` - revoke the presented refresh token’s entire session family.
 - `GET /v1/me` - return the user ID, role, and student profile, if present. Send the access token as `Authorization: Bearer <access-token>`.
-- `PUT /v1/me/student-profile` - save profile fields incrementally across the five onboarding steps. Profile photo and digital-footprint entries are HTTP(S) URLs. The final step publishes a complete profile for public viewing; see OpenAPI for the publish operation and field enums.
+- `PUT /v1/me/student-profile` - save profile fields incrementally across the five onboarding steps. Profile photos can be supplied as an HTTP(S) URL or uploaded with the photo route below; digital-footprint entries are HTTP(S) URLs. The final step publishes a complete profile for public viewing; see OpenAPI for the publish operation and field enums.
+- `POST /v1/me/student-profile/photo` - upload a multipart field named `photo` containing a PNG or JPEG image up to 5 MB. The API stores it locally under `PROFILE_UPLOAD_DIR/student_profiles` and returns the profile with its authenticated photo reference.
+- `GET /v1/me/student-profile/photo` - read the authenticated student's photo, including a draft photo during onboarding.
 - `GET /v1/students/{user_id}/profile` - read a verified, published student profile. Drafts are not public.
+- `GET /v1/students/{user_id}/profile/photo` - read a photo only when its profile is published and the student's email is verified.
 
 ### Freelancer onboarding routes
 
@@ -75,7 +78,7 @@ Freelancers use a separate profile from student profiles. All routes require a f
 - `GET /v1/me/freelancer-profile/photo` - read the authenticated freelancer’s photo.
 - `POST /v1/me/freelancer-profile/publish` - publish after email verification and completion of the required name, professional title, experience range, and project domains.
 
-Set `PROFILE_UPLOAD_DIR` in `.env` to choose the local photo directory; it defaults to `uploads`. Local files are instance-local and are not served as public static content. Back them up or move them when changing hosts; switching to S3 will require migrating the files and profile references.
+Set `PROFILE_UPLOAD_DIR` in `.env` to choose the local photo directory; it defaults to `uploads`. Student photos are stored in its `student_profiles` subdirectory and freelancer photos in `freelancer_profiles`. Local files are instance-local and are not served as public static content. Back them up or move them when changing hosts; switching to S3 will require migrating the files and profile references.
 
 Student profiles collect education and photo; experience, highlights, and work links; up to three core skills with depth plus supporting skills; availability, work type, arrangement, and duration; and a final public preview. Passwords use Argon2 hashes; refresh tokens and one-time auth tokens are stored only as hashes. Admin accounts must be provisioned through a trusted process.
 
